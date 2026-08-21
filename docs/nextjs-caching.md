@@ -122,7 +122,18 @@ Any `cacheHandlers` key matching `/^[a-z-]+$/` becomes a slot selectable as
 `E248` at the first cached call **[source]** `use-cache-wrapper.js:1161-1167`.
 The resolved config always contains `default`, `remote` and `static` keys
 (env-driven, usually `undefined`) **[source]** `config-shared.js:185-189`.
-**[unverified]** what the `static` slot is for; no ticket has traced it.
+The `static` key is a vestige: nothing selects, writes or reads a slot by
+that name (no directive, no build phase, no platform hook), and the shipped
+docs never mention it **[source]** `handlers.js:97-122`, `config.js:1067-1103`;
+upstream it was added with a never-implemented placeholder file in PR #71455
+and left behind when PR #71505 deleted the placeholder. `'use cache: static'`
+is just a custom slot, with one quirk: because the key is always present,
+webpack compiles the directive when the slot is unconfigured and fails at
+prerender with `E248`, while Turbopack rejects it at compile time (the Rust
+config drops `undefined` values, `swc/index.js:699-700`; webpack passes the
+keys unfiltered into SWC's `cacheKinds`, `swc/options.js:173-177`,
+`next-swc-loader.js:174`). Do not document or suggest `static` as a slot;
+see `docs/research/static-slot.md`.
 
 ## Cache key
 
@@ -415,7 +426,6 @@ Discrepancies found while tracing; the handler follows the source.
 
 Each item is owned by a later ticket; replace the mark when traced.
 
-- Purpose of the `static` slot in the resolved `cacheHandlers` config.
 - Whether `unstable_cache()` inside a cache scope lowers the Entry's
   `revalidate` (source comment says yes; path not traced).
 - Typical and maximum cache key and Entry value sizes (measurement prototype).
