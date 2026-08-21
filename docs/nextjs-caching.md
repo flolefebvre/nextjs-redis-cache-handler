@@ -10,8 +10,10 @@ Soft tag, Stale, Expired, Tag manifest, Handler slot).
 numbers refer to the compiled `dist/**/*.js`. **[docs]** means the Markdown
 shipped in `dist/docs/01-app/`. Anything marked **[unverified]** has not been
 traced to source yet and should be replaced by the ticket that verifies it.
-Where docs and source disagree, the source wins and the disagreement is listed
-in [Docs vs source](#docs-vs-source). Longer traces live in
+**[measured]** means observed on the fixture prototype
+(branch `prototype/e2e-fixture`, `next@16.3.2`, two `next start` instances on
+one build). Where docs and source disagree, the source wins and the
+disagreement is listed in [Docs vs source](#docs-vs-source). Longer traces live in
 `docs/research/use-cache-wrapper.md` (the `'use cache'` wrapper) and
 `docs/research/node-redis-capabilities.md`.
 
@@ -36,6 +38,19 @@ misattributed.
 Revalidation APIs fan out to **both** systems: `revalidateTags()` calls every
 `cacheHandlers` handler, then `incrementalCache.revalidateTag()` with the same
 tags **[source]** `dist/server/revalidation-utils.js:127-136`.
+
+**The multi-instance consequence.** A statically prerendered route (a page
+whose whole output is cacheable, `○` in the build summary) is served from the
+ISR copy of its HTML and never calls `cacheHandlers` at serve time
+(`x-nextjs-cache: HIT`, `x-nextjs-prerender: 1`). The `incrementalCache`
+half of the fan-out only reaches the instance that ran the revalidation API,
+so after `updateTag()` on instance A, instance B keeps serving its old HTML
+until something revalidates on B **[measured]**. The `'use cache'` Entries
+underneath *do* propagate (B's eventual re-render hit A's fresh Entry); only
+the page shell is per-instance. Dynamic / PPR routes (a `<Suspense>` boundary
+whose content depends on request data) read their Entries on every request
+and see propagation immediately. Sharing the ISR copy is the singular
+`cacheHandler`'s job, outside this document.
 
 ## The `CacheHandler` contract in one table
 
@@ -161,9 +176,12 @@ refresh hash in dev **[source]** `use-cache-wrapper.js:1494-1507`.
    (`:2136-2148`). A handler must store `_N_RP_` tags verbatim and expect two
    `set` calls per generation in that case (`:353-401`).
 
-The key is opaque to the handler: a string, typically a few hundred bytes,
-safe to use as a Redis key after prefixing. **[unverified]** maximum observed
-key length; the measurement prototype will record it.
+The key is opaque to the handler: a string safe to use as a Redis key after
+prefixing. **[measured]** 73–85 bytes for a 21-char build id, a 42-hex
+function id and zero or one small argument, e.g.
+`["xErB8FdynePlOh-gdL1zC","c024a7da…9dbc",[{"id":1}]]`; a component's props
+arrive as a single object argument. Keys grow with the arguments, not with
+the output.
 
 ## `cacheLife`: `stale`, `revalidate`, `expire`
 
@@ -395,6 +413,60 @@ it in the root-params joiner path (`:405-411`, `:2063-2077`).
 - `cacheMaxMemorySize` is not passed to custom handlers; it only sizes the
   built-in LRU and the `IncrementalCache` memory tier.
 
+## Measured: entry sizes and call order
+
+From the fixture prototype **[measured]**: a list page over a cached
+`getPosts()` (50 posts), a PPR detail page with a cached `PostBody` over
+`getPost(id)` and a nested cached `Comments` over `getComments(id)`
+(`cacheLife('short')`), and a 500-row table.
+
+| Entry | RSC bytes in `set` | Note |
+| --- | ---: | --- |
+| cached component, one 6-paragraph article | 4 174 | |
+| cached data fn, one post | 4 106 | |
+| cached component, 20 comments | 5 360 | |
+| list page, 50 titles + excerpts | 18 939 | HTML 40 770 |
+| cached data fn, 50 full posts | 206 182 | 10× the page that consumes it |
+| 500 rich table rows | 528 533 | HTML 1 031 601, ≈1 KB/row |
+
+RSC is roughly half the HTML for markup-heavy output. Large Entries come from
+cached **data functions**, whose Entry holds everything they return, not from
+pages, which render a slice of it.
+
+Call order per request on a dynamic route:
+
+1. `refreshTags()` once, before the first `get`; on a post-action re-render
+   it runs right after `updateTags` resolved.
+2. `get(key, softTags)` for every cache scope reachable in parallel,
+   outermost first; inner scopes are read only when their outer scope missed
+   or is regenerating. `softTags` for `/posts/1`: `_N_T_/layout`,
+   `_N_T_/posts/layout`, `_N_T_/posts/[id]/layout`, `_N_T_/posts/[id]/page`,
+   `_N_T_/posts/1`; for `/`: `_N_T_/layout`, `_N_T_/page`, `_N_T_/`,
+   `_N_T_/index`.
+3. `getExpiration(softTags)` once, only when at least one `get` returned an
+   Entry.
+4. `set` inner-first, then outer. The outer Entry's `tags` is the **union**
+   of its own and its nested scopes' tags (a component without `cacheTag` is
+   stored with its data function's tags), and its timings are the minimum
+   over nested scopes.
+5. After a tag-stale read (`get` returned `revalidate: -1`, as the default
+   handler does, `default.js:86-88`) the wrapper regenerates in the
+   background; if an inner scope was served stale during that regeneration,
+   the regenerated outer Entry is **stored with `revalidate: -1`** and
+   regenerates once more on the next read. A handler must accept a negative
+   `revalidate` in `set`.
+6. `next build` writes the static routes' Entries from one prerender worker,
+   with the same build id `next start` later uses, and runtime reads them
+   back; a build without Redis access just means the first runtime render
+   rewrites them.
+7. `revalidatePath('/')` yields `['_N_T_/', '_N_T_/index']`;
+   `revalidatePath('/', 'layout')` yields `['_N_T_/layout']` and expires every
+   Entry on every instance.
+
+A server action can be driven without a browser: `POST` the page URL with
+`Next-Action: <id>` (ids in `.next/server/server-reference-manifest.json`),
+`Content-Type: text/plain;charset=UTF-8` and body `[]`.
+
 ## What does not reach `cacheHandlers`
 
 - `fetch()` with `cache: 'force-cache'` / `next.revalidate` / `next.tags`
@@ -428,7 +500,6 @@ Each item is owned by a later ticket; replace the mark when traced.
 
 - Whether `unstable_cache()` inside a cache scope lowers the Entry's
   `revalidate` (source comment says yes; path not traced).
-- Typical and maximum cache key and Entry value sizes (measurement prototype).
 - Behaviour of a `cacheHandlers` handler under `output: 'standalone'` beyond
   the path rewrite in `required-server-files.json` (`dist/build/index.js:
   1079-1099`).
