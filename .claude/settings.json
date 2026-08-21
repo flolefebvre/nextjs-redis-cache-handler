@@ -1,5 +1,60 @@
 {
   "enabledPlugins": {
     "mattpocock-skills@claude-plugins-official": true
+  },
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git blame:*)",
+      "Bash(git symbolic-ref:*)",
+      "Bash(git branch:*)",
+      "Bash(git tag:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git checkout:*)",
+      "Bash(git switch:*)",
+      "Bash(git restore:*)",
+      "Bash(git reset:*)",
+      "Bash(git clean:*)",
+      "Bash(git stash:*)",
+      "Bash(git merge:*)",
+      "Bash(git rebase:*)",
+      "Bash(git cherry-pick:*)",
+      "Bash(git fetch:*)",
+      "Bash(git pull:*)",
+      "Bash(git push:*)",
+      "Bash(git remote:*)",
+      "Bash(git worktree:*)",
+      "Bash(git config:*)",
+
+      "Bash(gh pr list:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh pr status:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr comment:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh issue create:*)",
+      "Bash(gh issue edit:*)",
+      "Bash(gh issue close:*)",
+      "Bash(gh issue comment:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh run watch:*)",
+      "Bash(gh repo view:*)",
+      "Bash(gh search:*)",
+      "Bash(gh api:*)"
+    ],
+    "deny": [
+      "Bash(gh repo delete:*)",
+      "Bash(gh release:*)",
+      "Bash(gh auth token:*)"
+    ]
   }
 }
