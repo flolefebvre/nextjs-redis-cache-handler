@@ -1,0 +1,13 @@
+{
+  "name": "prototype-refresh-tags-read",
+  "private": true,
+  "type": "module",
+  "description": "PROTOTYPE (throwaway): measures refreshTags full read vs watermark read against a real Valkey. Wayfinder ticket #6.",
+  "scripts": {
+    "measure": "node --expose-gc measure.mjs",
+    "race": "node race.mjs"
+  },
+  "dependencies": {
+    "redis": "^6.2.1"
+  }
+}
