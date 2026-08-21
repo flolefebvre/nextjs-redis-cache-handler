@@ -1,0 +1,4 @@
+node_modules
+.next
+.fixture-store
+next-env.d.ts

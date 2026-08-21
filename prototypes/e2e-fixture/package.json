@@ -1,0 +1,23 @@
+{
+  "name": "prototype-e2e-fixture",
+  "private": true,
+  "description": "PROTOTYPE (throwaway): Next.js 16.3 cacheComponents fixture wired to a file-backed logging cacheHandlers handler. Measures entry sizes and handler call sequences across two instances. Wayfinder ticket #7.",
+  "scripts": {
+    "build": "next build",
+    "start:a": "next start -p 3000",
+    "start:b": "next start -p 3001",
+    "drive": "bash scripts/drive.sh",
+    "report": "node scripts/report.mjs",
+    "clean": "rm -rf .next .fixture-store"
+  },
+  "dependencies": {
+    "next": "16.3.2",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "@types/react": "^19",
+    "typescript": "^5"
+  }
+}
