@@ -40,6 +40,11 @@ type ReadOutcome =
  * is slow, serving an Entry a mutation has already dropped is wrong. `updateTags` does
  * reject, so that a lost invalidation fails the Server Action visibly.
  *
+ * A `refreshTags` reads only the tag events written since the last one, so its cost does
+ * not grow with the number of tags an app has ever revalidated. The whole Tag manifest is
+ * read again on the first call of the process, on the first call after the client
+ * reconnected, and when the Redis clock has stepped backwards.
+ *
  * Every outcome of a `get` and of a `set` is reported to `onEvent`, and every failure to
  * `onError` with the operation it happened in. An Entry the wrapper would read as expired
  * on every read, or one whose value is larger than `maxEntrySize`, is not written at all
@@ -55,6 +60,7 @@ export function createRedisCacheHandler(
   const pendingSets = new Map<string, Promise<void>>();
   const manifest = createTagManifest(maxTtl * 1000);
   let refreshing: Promise<void> | undefined;
+  let readReconnects = 0;
 
   async function store(cacheKey: string, pendingEntry: Promise<CacheEntry>): Promise<void> {
     const entry = await pendingEntry;
@@ -116,13 +122,20 @@ export function createRedisCacheHandler(
 
   async function refresh(): Promise<void> {
     const connected = await client.connected();
-    const since = manifest.since();
+    const reconnects = client.reconnects();
+    const since = reconnects === readReconnects ? manifest.since() : undefined;
+
     if (since !== undefined) {
       const events = await readTagManifestSince(connected, keyPrefix, since);
-      if (manifest.mergeWith(events)) return;
+      if (manifest.mergeWith(events)) {
+        readReconnects = reconnects;
+
+        return;
+      }
     }
 
     manifest.replaceWith(await readTagManifest(connected, keyPrefix));
+    readReconnects = reconnects;
   }
 
   return {

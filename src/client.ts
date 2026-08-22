@@ -57,6 +57,9 @@ export interface CacheCommands {
   hGetAll(key: RedisArgument): Promise<Record<string, unknown>>;
 }
 
+/** What the handler listens to on its client: a failure, and a connection being rebuilt. */
+export type CacheClientEvent = "error" | "reconnecting";
+
 /**
  * The client every operation of one handler object runs on: what the handler uses of a
  * node-redis client, and nothing more.
@@ -69,10 +72,13 @@ export interface CacheCommands {
 export interface CacheClient {
   /** This client, seen through the given type mapping. */
   withTypeMapping(typeMapping: TypeMapping): CacheCommands;
-  /** Listen to the client's failures, inside an operation and outside any. */
-  on(event: "error", listener: (error: unknown) => void): unknown;
+  /**
+   * Listen to the client's failures, inside an operation and outside any, and to its
+   * connection being rebuilt.
+   */
+  on(event: CacheClientEvent, listener: (payload: unknown) => void): unknown;
   /** Stop listening: what `close()` undoes of what the handler attached. */
-  off(event: "error", listener: (error: unknown) => void): unknown;
+  off(event: CacheClientEvent, listener: (payload: unknown) => void): unknown;
 }
 
 /**
@@ -86,6 +92,13 @@ export interface CacheClientHandle {
    * client the caller owns would change a lifecycle that is theirs.
    */
   connected(): Promise<CacheClient>;
+  /**
+   * How many times the client has begun reconnecting since the handler attached to it.
+   * A read of the Tag manifest compares it against the count of its last read: any
+   * change means events may have been written while the connection was down, and the
+   * whole manifest has to be read again.
+   */
+  reconnects(): number;
   /**
    * Quit a client the handler owns, or resolve immediately when it was never used. A
    * connection attempt still in progress is destroyed rather than awaited: the reconnect
@@ -124,15 +137,40 @@ export function createCacheClient(
 }
 
 /**
+ * Attach what the handler listens to, on a client of either kind: the `error` listener
+ * node-redis crashes the process without, and the count of reconnections a refresh of the
+ * Tag manifest reads. `detach` takes back exactly these two listeners, so that one
+ * long-lived injected client feeding many handler objects collects none of them.
+ */
+function listenTo(client: CacheClient, report: (error: unknown) => void) {
+  let reconnects = 0;
+  const count = (): void => {
+    reconnects += 1;
+  };
+
+  client.on("error", report);
+  client.on("reconnecting", count);
+
+  return {
+    reconnects: (): number => reconnects,
+    detach: (): void => {
+      client.off("error", report);
+      client.off("reconnecting", count);
+    },
+  };
+}
+
+/**
  * The handler's own client: created here, connected on first use and quit on `close()`.
  */
 function ownedClient(url: string, report: (error: unknown) => void): CacheClientHandle {
   const client = createTunedClient(url);
-  client.on("error", report);
+  const listeners = listenTo(client, report);
 
   let connecting: Promise<CacheClient> | undefined;
 
   return {
+    reconnects: listeners.reconnects,
     connected(): Promise<CacheClient> {
       connecting ??= client.connect().then(
         () => {
@@ -159,6 +197,7 @@ function ownedClient(url: string, report: (error: unknown) => void): CacheClient
       }
 
       await attempt.catch(() => undefined);
+      listeners.detach();
     },
   };
 }
@@ -170,14 +209,15 @@ function ownedClient(url: string, report: (error: unknown) => void): CacheClient
  * client feeding many handler objects must not collect a listener per handler.
  */
 function injectedClient(client: CacheClient, report: (error: unknown) => void): CacheClientHandle {
-  client.on("error", report);
+  const listeners = listenTo(client, report);
 
   return {
+    reconnects: listeners.reconnects,
     connected(): Promise<CacheClient> {
       return Promise.resolve(client);
     },
     close(): Promise<void> {
-      client.off("error", report);
+      listeners.detach();
 
       return Promise.resolve();
     },

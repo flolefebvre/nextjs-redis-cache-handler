@@ -150,6 +150,16 @@ test("close() takes the handler's error listener off an injected client", async 
   expect(opsOf(recorded.errors)).toEqual(["connect"]);
 });
 
+test("close() leaves an injected client with no listener of the handler's on it", async () => {
+  const injected = await serverClient();
+  const before = ["error", "reconnecting"].map((event) => injected.listenerCount(event));
+  const handler = createRedisCacheHandler({ client: injected, keyPrefix: freshPrefix() });
+
+  await handler.close();
+
+  expect(["error", "reconnecting"].map((event) => injected.listenerCount(event))).toEqual(before);
+});
+
 test("close() quits a client the handler created from a url", async () => {
   const handle = createCacheClient({ url: inject("redisUrl") }, () => undefined);
   const client = await handle.connected();

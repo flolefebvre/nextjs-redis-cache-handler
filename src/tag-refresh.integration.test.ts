@@ -1,16 +1,16 @@
-import { expect, test } from "vitest";
+import { expect, onTestFinished, test } from "vitest";
 
 import {
   commandStream,
   freshPrefix,
   handlerFor,
   instancePair,
+  serverClient,
   storeBefore,
   tagCommandNames,
   wait,
 } from "../tests/handler-harness.js";
-
-const READ_COMMANDS = ["EVAL", "EVALSHA"];
+import { createRedisCacheHandler } from "./redis-cache-handler.js";
 
 const MAX_TTL_SECONDS = 1;
 
@@ -46,6 +46,7 @@ test("ten concurrent refreshes are one read round trip, and all of them resolve"
   const keyPrefix = freshPrefix();
   const handler = handlerFor(keyPrefix);
   await handler.refreshTags();
+  await handler.refreshTags();
   const stream = await commandStream(keyPrefix);
 
   const refreshes = await Promise.all(
@@ -53,10 +54,7 @@ test("ten concurrent refreshes are one read round trip, and all of them resolve"
   );
 
   expect(refreshes).toEqual(Array.from({ length: 10 }, () => "done"));
-  const reads = tagCommandNames(await stream.settled(), keyPrefix).filter((name) =>
-    READ_COMMANDS.includes(name),
-  );
-  expect(reads).toHaveLength(1);
+  expect(tagCommandNames(await stream.settled(), keyPrefix)).toEqual(["EVALSHA", "ZRANGE"]);
 });
 
 test("a tag event too old to affect any living Entry stops hiding one", async () => {
@@ -84,4 +82,24 @@ test("both reads of the Tag manifest stay within the portable command set", asyn
 
   const names = new Set(tagCommandNames(await stream.settled(), keyPrefix));
   expect(names).toEqual(new Set(["EVALSHA", "HGETALL", "ZRANGE", "HMGET", "HSET", "ZADD"]));
+});
+
+test("a handler whose client reconnected reads the whole manifest and sees what it missed", async () => {
+  const keyPrefix = freshPrefix();
+  const injected = await serverClient();
+  const handler = createRedisCacheHandler({ client: injected, keyPrefix });
+  onTestFinished(() => handler.close());
+  const writer = handlerFor(keyPrefix);
+  await storeBefore(writer, "posts", { tags: ["posts"] });
+  await handler.refreshTags();
+  const killer = await serverClient();
+  const stream = await commandStream(keyPrefix);
+
+  await killer.sendCommand(["CLIENT", "KILL", "ID", String(await injected.clientId())]);
+  await writer.updateTags(["posts"]);
+  await injected.ping();
+  await handler.refreshTags();
+
+  expect(await handler.get("posts", [])).toBeUndefined();
+  expect(tagCommandNames(await stream.settled(), keyPrefix)).toContain("HGETALL");
 });
