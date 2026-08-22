@@ -1,7 +1,13 @@
 import { createCacheClient } from "./client.js";
+import { DeadlineError, withDeadline } from "./deadline.js";
 import type { BufferedEntry, StoredEntry } from "./entry-hash.js";
 import { entryAge, entryKey, entryTtlSeconds, readEntry, writeEntry } from "./entry-store.js";
-import { createReporter, type CacheEvent, type CacheSkipReason } from "./events.js";
+import {
+  createReporter,
+  type CacheEvent,
+  type CacheMissReason,
+  type CacheSkipReason,
+} from "./events.js";
 import { resolveOptions, type RedisCacheHandlerOptions } from "./options.js";
 import { createTagManifest } from "./tag-manifest.js";
 import { readTagManifest, readTagManifestSince, writeTagEvents } from "./tag-store.js";
@@ -15,8 +21,7 @@ const STALE_REVALIDATE = -1;
  * miss and why. It maps one to one to the event `onEvent` receives.
  */
 type ReadOutcome =
-  | { kind: "hit" | "stale"; entry: CacheEntry }
-  | { kind: "miss"; reason: "absent" | "expired" | "unavailable" };
+  { kind: "hit" | "stale"; entry: CacheEntry } | { kind: "miss"; reason: CacheMissReason };
 
 /**
  * Build a Cache Handler backed by Redis or Valkey, so that every Instance of a
@@ -40,6 +45,23 @@ type ReadOutcome =
  * is slow, serving an Entry a mutation has already dropped is wrong. `updateTags` does
  * reject, so that a lost invalidation fails the Server Action visibly.
  *
+ * `operationTimeout` bounds every one of them, the wait on the connection included, so
+ * that a store that stopped answering makes the app slower and never blocks it. A `get`
+ * that ran out of time is a miss `timeout` and one that failed for any other reason,
+ * a client with no connection first among them, is a miss `unavailable`; a `set` and a
+ * `refreshTags` past their deadline give up, the refresh keeping the manifest it had
+ * rather than applying a read that came back late. Every one of them reports through
+ * `onError` with its own operation, and a connection-level failure through `op:
+ * 'connect'`.
+ *
+ * The deadline covers the store, never the render: a `get` that arrives while an Entry
+ * for the same key is still being rendered waits for that write, however long it takes,
+ * and is bounded only from the read it then makes.
+ *
+ * Giving up is not cancelling: a write that ran out of time may still reach the store
+ * afterwards, and is stamped as of its landing — the Redis clock then, less the Entry's
+ * age — so a tag event issued meanwhile is compared against that later Write time.
+ *
  * A `refreshTags` reads only the tag events written since the last one, so its cost does
  * not grow with the number of tags an app has ever revalidated. The whole Tag manifest is
  * read again on the first call of the process, on the first call after the client
@@ -55,7 +77,7 @@ export function createRedisCacheHandler(
   options: RedisCacheHandlerOptions,
 ): CacheHandler & { close(): Promise<void> } {
   const resolved = resolveOptions(options);
-  const { keyPrefix, maxTtl, maxEntrySize } = resolved;
+  const { keyPrefix, maxTtl, maxEntrySize, operationTimeout } = resolved;
   const reporter = createReporter(resolved);
   const client = createCacheClient(resolved.connection, reporter.fail);
   const pendingSets = new Map<string, Promise<void>>();
@@ -82,15 +104,17 @@ export function createRedisCacheHandler(
       return;
     }
 
-    const connected = await client.connected();
+    await withDeadline(operationTimeout, async () => {
+      const connected = await client.connected();
 
-    await writeEntry(
-      connected,
-      entryKey(keyPrefix, cacheKey),
-      { ...entry, value },
-      age,
-      ttlSeconds,
-    );
+      await writeEntry(
+        connected,
+        entryKey(keyPrefix, cacheKey),
+        { ...entry, value },
+        age,
+        ttlSeconds,
+      );
+    });
     reporter.emit({ type: "set", key: cacheKey, durationMs: performance.now() - startedAt });
   }
 
@@ -100,35 +124,40 @@ export function createRedisCacheHandler(
     return readEntry(connected, entryKey(keyPrefix, cacheKey));
   }
 
+  async function served(cacheKey: string, softTags: string[]): Promise<ReadOutcome> {
+    const stored = await load(cacheKey);
+    if (stored === undefined) return { kind: "miss", reason: "absent" };
+    if (stored.expire < 0) return { kind: "miss", reason: "expired" };
+
+    const verdict = manifest.verdictFor(stored.tags, softTags, stored.writeTime);
+    if (verdict === "expired") return { kind: "miss", reason: "expired" };
+
+    const stale = verdict === "stale" || isPastRevalidate(stored, Date.now());
+
+    return { kind: stale ? "stale" : "hit", entry: entryOf(stored, stale) };
+  }
+
   async function read(cacheKey: string, softTags: string[]): Promise<ReadOutcome> {
     await pendingSets.get(cacheKey);
     if (manifest.serverNow() === undefined) return { kind: "miss", reason: "unavailable" };
 
     try {
-      const stored = await load(cacheKey);
-      if (stored === undefined) return { kind: "miss", reason: "absent" };
-      if (stored.expire < 0) return { kind: "miss", reason: "expired" };
-
-      const verdict = manifest.verdictFor(stored.tags, softTags, stored.writeTime);
-      if (verdict === "expired") return { kind: "miss", reason: "expired" };
-
-      const stale = verdict === "stale" || isPastRevalidate(stored, Date.now());
-
-      return { kind: stale ? "stale" : "hit", entry: entryOf(stored, stale) };
+      return await withDeadline(operationTimeout, () => served(cacheKey, softTags));
     } catch (error) {
       reporter.fail(error, "get");
 
-      return { kind: "miss", reason: "unavailable" };
+      return { kind: "miss", reason: failedReason(error) };
     }
   }
 
-  async function refresh(): Promise<void> {
+  async function refresh(passed: () => boolean): Promise<void> {
     const connected = await client.connected();
     const reconnects = client.reconnects();
     const since = reconnects === readReconnects ? manifest.since() : undefined;
 
     if (since !== undefined) {
       const events = await readTagManifestSince(connected, keyPrefix, since);
+      if (passed()) return;
       if (events !== undefined && manifest.mergeWith(events)) {
         readReconnects = reconnects;
 
@@ -136,7 +165,10 @@ export function createRedisCacheHandler(
       }
     }
 
-    manifest.replaceWith(await readTagManifest(connected, keyPrefix));
+    const states = await readTagManifest(connected, keyPrefix);
+    if (passed()) return;
+
+    manifest.replaceWith(states);
     readReconnects = reconnects;
   }
 
@@ -159,7 +191,7 @@ export function createRedisCacheHandler(
       });
     },
     refreshTags(): Promise<void> {
-      refreshing ??= refresh()
+      refreshing ??= withDeadline(operationTimeout, refresh)
         .catch((error: unknown) => {
           reporter.fail(error, "refreshTags");
         })
@@ -176,9 +208,11 @@ export function createRedisCacheHandler(
       if (tags.length === 0) return;
 
       try {
-        const connected = await client.connected();
+        await withDeadline(operationTimeout, async () => {
+          const connected = await client.connected();
 
-        await writeTagEvents(connected, keyPrefix, tags, durations, maxTtl);
+          await writeTagEvents(connected, keyPrefix, tags, durations, maxTtl);
+        });
       } catch (error) {
         reporter.fail(error, "updateTags");
 
@@ -189,6 +223,10 @@ export function createRedisCacheHandler(
       return client.close();
     },
   };
+}
+
+function failedReason(error: unknown): CacheMissReason {
+  return error instanceof DeadlineError ? "timeout" : "unavailable";
 }
 
 function skipReason(

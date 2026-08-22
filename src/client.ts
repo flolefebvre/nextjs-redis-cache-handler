@@ -9,6 +9,8 @@ const PING_INTERVAL = 10_000;
 const RECONNECT_CAP = 2_000;
 const RECONNECT_JITTER = 200;
 
+const NOT_CONNECTED = "the cache client is not connected";
+
 /**
  * How long to wait before the next reconnection attempt: 50·2ⁿ ms, capped at 2 s, plus
  * up to 200 ms of jitter so that every Instance of a deployment does not come back on
@@ -165,16 +167,33 @@ function listenTo(client: CacheClient, report: (error: unknown) => void) {
 
 /**
  * The handler's own client: created here, connected on first use and quit on `close()`.
+ *
+ * The first operation is the one that waits for the connection; every later one, while
+ * the client is not ready and has already been seen failing, is handed the failure at
+ * once instead of waiting out its deadline. A connection attempt against a server that
+ * is down never settles at all — the reconnect strategy never gives up — so waiting on it
+ * would spend the whole deadline of every operation for as long as the outage lasts.
+ *
+ * Nothing is latched: the client keeps reconnecting on its own, and the moment it is ready
+ * again it is handed over as before, which is how one handler object comes back from an
+ * outage without being rebuilt.
  */
 function ownedClient(url: string, report: (error: unknown) => void): CacheClientHandle {
   const client = createTunedClient(url);
   const listeners = listenTo(client, report);
 
   let connecting: Promise<CacheClient> | undefined;
+  let failed = false;
+  client.on("error", () => {
+    failed = !client.isReady;
+  });
 
   return {
     reconnects: listeners.reconnects,
     connected(): Promise<CacheClient> {
+      if (client.isReady) return Promise.resolve(client);
+      if (connecting !== undefined && failed) return Promise.reject(new Error(NOT_CONNECTED));
+
       connecting ??= client.connect().then(
         () => {
           client.unref();

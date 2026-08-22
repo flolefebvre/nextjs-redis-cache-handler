@@ -12,6 +12,8 @@ import {
 } from "../tests/handler-harness.js";
 import type { CacheEntry } from "./types.js";
 
+const SHORT_TIMEOUT = 200;
+
 test("an Entry written by set comes back from get unchanged", async () => {
   const handler = handlerFor(freshPrefix());
   const entry = entryOf();
@@ -184,6 +186,29 @@ test("a get issued while a set for the same key is still pending returns the sto
 
   expect(hit).toBeDefined();
   expect(await bytesOf((hit as CacheEntry).value)).toEqual(VALUE);
+});
+
+test("a get waits out a render longer than the deadline instead of timing out", async () => {
+  const recorded = recording();
+  const handler = handlerFor(freshPrefix(), {
+    operationTimeout: SHORT_TIMEOUT,
+    ...recorded.hooks,
+  });
+  await handler.refreshTags();
+  const rendering = new Promise<CacheEntry>((resolve) => {
+    setTimeout(() => {
+      resolve(entryOf());
+    }, SHORT_TIMEOUT * 2);
+  });
+
+  const written = handler.set("slow-render", rendering);
+  const read = handler.get("slow-render", []);
+  const [, hit] = await Promise.all([written, read]);
+
+  expect(hit).toBeDefined();
+  expect(await bytesOf((hit as CacheEntry).value)).toEqual(VALUE);
+  expect(recorded.events.map((event) => event.type)).not.toContain("miss");
+  expect(recorded.errors).toEqual([]);
 });
 
 test("a key nobody wrote is a miss", async () => {
