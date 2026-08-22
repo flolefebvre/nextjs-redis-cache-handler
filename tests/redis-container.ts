@@ -1,4 +1,10 @@
-import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers";
+import { createServer } from "node:net";
+import {
+  GenericContainer,
+  Wait,
+  getContainerRuntimeClient,
+  type StartedTestContainer,
+} from "testcontainers";
 
 /**
  * The server the integration project runs against unless `CACHE_TEST_IMAGE` says
@@ -49,4 +55,74 @@ export async function startRedisContainer(image: string): Promise<RunningRedis> 
       await container.stop();
     },
   };
+}
+
+/**
+ * A server one test file owns, and the three states an outage puts it through: stalled
+ * (frozen, the socket stays open and nothing answers), down (the port refuses
+ * connections), and back. It is never the shared server of the run: a test that stalls
+ * the server every other worker talks to would stall the whole suite.
+ */
+export interface OutageRedis {
+  /** Where it answers, on a host port of its own so that the URL survives a stop. */
+  url: string;
+  /** Freeze the server: connections stay open, commands never get a reply. */
+  pause(): Promise<void>;
+  /** Unfreeze it: the commands that were in flight get their reply. */
+  unpause(): Promise<void>;
+  /** Take it down: the port refuses connections, and what it held is kept. */
+  stop(): Promise<void>;
+  /** Bring the same server back on the same port, with everything it held. */
+  start(): Promise<void>;
+  /** Remove it, whatever state it is in. */
+  remove(): Promise<void>;
+}
+
+/**
+ * Start a server for one test file to break. The host port is chosen here rather than
+ * left to Docker: a stopped container comes back on a new random mapping, and a handler
+ * configured with a URL cannot follow it.
+ *
+ * `pause` goes through the container runtime Testcontainers itself talks to, because a
+ * started container exposes no pause of its own. It is the only way to reach a stalled
+ * server — a socket that is open with nothing answering — which is the only state that
+ * makes an operation hit its deadline rather than fail outright.
+ */
+export async function startOutageRedis(image: string): Promise<OutageRedis> {
+  const port = await freeHostPort();
+  const container = await new GenericContainer(image)
+    .withExposedPorts({ container: REDIS_PORT, host: port })
+    .withWaitStrategy(Wait.forLogMessage(/Ready to accept connections/))
+    .start();
+  const runtime = await getContainerRuntimeClient();
+  const runningContainer = runtime.container.getById(container.getId());
+
+  return {
+    url: `redis://127.0.0.1:${String(port)}`,
+    pause: async () => {
+      await runningContainer.pause();
+    },
+    unpause: async () => {
+      await runningContainer.unpause();
+    },
+    stop: async () => {
+      await container.stop({ remove: false });
+    },
+    start: async () => {
+      await container.restart();
+    },
+    remove: async () => {
+      await container.stop();
+    },
+  };
+}
+
+async function freeHostPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port = typeof address === "object" && address !== null ? address.port : 0;
+  await new Promise((resolve) => server.close(resolve));
+
+  return port;
 }
