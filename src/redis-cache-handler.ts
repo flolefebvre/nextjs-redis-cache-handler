@@ -54,9 +54,13 @@ type ReadOutcome =
  * `onError` with its own operation, and a connection-level failure through `op:
  * 'connect'`.
  *
+ * The deadline covers the store, never the render: a `get` that arrives while an Entry
+ * for the same key is still being rendered waits for that write, however long it takes,
+ * and is bounded only from the read it then makes.
+ *
  * Giving up is not cancelling: a write that ran out of time may still reach the store
- * afterwards, and lands there with the Write time it was given, which is the one a tag
- * event is compared against.
+ * afterwards, and is stamped as of its landing — the Redis clock then, less the Entry's
+ * age — so a tag event issued meanwhile is compared against that later Write time.
  *
  * A `refreshTags` reads only the tag events written since the last one, so its cost does
  * not grow with the number of tags an app has ever revalidated. The whole Tag manifest is
@@ -121,9 +125,6 @@ export function createRedisCacheHandler(
   }
 
   async function served(cacheKey: string, softTags: string[]): Promise<ReadOutcome> {
-    await pendingSets.get(cacheKey);
-    if (manifest.serverNow() === undefined) return { kind: "miss", reason: "unavailable" };
-
     const stored = await load(cacheKey);
     if (stored === undefined) return { kind: "miss", reason: "absent" };
     if (stored.expire < 0) return { kind: "miss", reason: "expired" };
@@ -137,6 +138,9 @@ export function createRedisCacheHandler(
   }
 
   async function read(cacheKey: string, softTags: string[]): Promise<ReadOutcome> {
+    await pendingSets.get(cacheKey);
+    if (manifest.serverNow() === undefined) return { kind: "miss", reason: "unavailable" };
+
     try {
       return await withDeadline(operationTimeout, () => served(cacheKey, softTags));
     } catch (error) {
