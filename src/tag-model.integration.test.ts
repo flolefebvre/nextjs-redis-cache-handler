@@ -1,6 +1,12 @@
 import { expect, test } from "vitest";
 
-import { entryOf, freshPrefix, handlerFor, serverClient } from "../tests/handler-harness.js";
+import {
+  entryOf,
+  freshPrefix,
+  handlerFor,
+  serverClient,
+  timingsOf,
+} from "../tests/handler-harness.js";
 import type { CacheEntry } from "./types.js";
 
 test("a tag another Instance expired makes the Entry a miss on the next request", async () => {
@@ -76,4 +82,48 @@ test("an Entry written after the tag event is served", async () => {
 
   expect(hit).toBeDefined();
   expect((hit as CacheEntry).revalidate).toBe(60);
+});
+
+test("a tag revalidated for max is served once more, with its other timings unchanged", async () => {
+  const keyPrefix = freshPrefix();
+  const [instanceA, instanceB] = [handlerFor(keyPrefix), handlerFor(keyPrefix)];
+  const entry = entryOf({ tags: ["posts"] });
+
+  await instanceA.set("posts", Promise.resolve(entry));
+  await instanceA.updateTags(["posts"], { expire: 31536000 });
+  await instanceB.refreshTags();
+
+  const hit = (await instanceB.get("posts", [])) as CacheEntry;
+
+  expect(hit).toBeDefined();
+  expect(timingsOf(hit)).toEqual({ ...timingsOf(entry), revalidate: -1 });
+});
+
+test("a tag expired now, however Next.js says it, is an immediate miss", async () => {
+  const keyPrefix = freshPrefix();
+  const [instanceA, instanceB] = [handlerFor(keyPrefix), handlerFor(keyPrefix)];
+
+  await instanceA.set("zero", Promise.resolve(entryOf({ tags: ["zero"] })));
+  await instanceA.set("legacy", Promise.resolve(entryOf({ tags: ["legacy"] })));
+  await instanceA.updateTags(["zero"], { expire: 0 });
+  await instanceA.updateTags(["legacy"]);
+  await instanceB.refreshTags();
+
+  expect(await instanceB.get("zero", [])).toBeUndefined();
+  expect(await instanceB.get("legacy", [])).toBeUndefined();
+});
+
+test("durations without an expire make the tag Stale and leave its expiration where it was", async () => {
+  const keyPrefix = freshPrefix();
+  const [instanceA, instanceB] = [handlerFor(keyPrefix), handlerFor(keyPrefix)];
+
+  await instanceA.set("posts", Promise.resolve(entryOf({ tags: ["posts"] })));
+  await instanceA.updateTags(["posts"], { expire: 31536000 });
+  await instanceA.updateTags(["posts"], {});
+  await instanceB.refreshTags();
+
+  const hit = (await instanceB.get("posts", [])) as CacheEntry;
+
+  expect(hit).toBeDefined();
+  expect(hit.revalidate).toBe(-1);
 });
