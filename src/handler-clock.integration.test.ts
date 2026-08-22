@@ -8,9 +8,11 @@ import {
   seedHandlerClock,
   serverClient,
   serverNow,
+  type ServerClient,
 } from "../tests/handler-harness.js";
 import { WRITE_TIME_FIELD } from "./entry-hash.js";
 import { entryKey } from "./entry-store.js";
+import { tagKeys } from "./tag-store.js";
 
 const AGE_MS = 60_000;
 
@@ -29,24 +31,20 @@ const CLOCK_MARGIN_MS = 5_000;
 const STEP_MS = 10_000;
 
 test("the first Entry of a store starts the Handler clock and is stamped from it", async () => {
-  const keyPrefix = freshPrefix();
-  const handler = handlerFor(keyPrefix);
-  const server = await serverClient();
+  const { keyPrefix, handler, server } = await store();
 
   expect(await handlerClock(server, keyPrefix)).toBeUndefined();
   await handler.set("first", Promise.resolve(entryOf()));
 
-  const clock = await handlerClock(server, keyPrefix);
+  const clock = (await handlerClock(server, keyPrefix)) ?? 0;
   const writeTime = await writeTimeOf(server, keyPrefix, "first");
   expect(clock).toBeGreaterThan(0);
-  expect(writeTime).toBeLessThanOrEqual(clock ?? 0);
-  expect(writeTime).toBeGreaterThan((clock ?? 0) - CLOCK_MARGIN_MS);
+  expect(writeTime).toBeLessThanOrEqual(clock);
+  expect(writeTime).toBeGreaterThan(clock - CLOCK_MARGIN_MS);
 });
 
 test("an Entry that took a while to generate is stamped that far before the clock", async () => {
-  const keyPrefix = freshPrefix();
-  const handler = handlerFor(keyPrefix);
-  const server = await serverClient();
+  const { keyPrefix, handler, server } = await store();
 
   await handler.set("slow", Promise.resolve(entryOf({ timestamp: Date.now() - AGE_MS })));
 
@@ -57,9 +55,7 @@ test("an Entry that took a while to generate is stamped that far before the cloc
 });
 
 test("every stamp the Handler clock issues is later than the one before it", async () => {
-  const keyPrefix = freshPrefix();
-  const handler = handlerFor(keyPrefix);
-  const server = await serverClient();
+  const { keyPrefix, handler, server } = await store();
 
   await handler.set("one", Promise.resolve(entryOf()));
   const first = await handlerClock(server, keyPrefix);
@@ -72,44 +68,32 @@ test("every stamp the Handler clock issues is later than the one before it", asy
   expect(third).toBeGreaterThan(second ?? 0);
 });
 
-async function writeTimeOf(
-  server: Awaited<ReturnType<typeof serverClient>>,
-  keyPrefix: string,
-  cacheKey: string,
-): Promise<number> {
-  return Number(await server.hGet(entryKey(keyPrefix, cacheKey), WRITE_TIME_FIELD));
-}
-
 test("a tag event issued while the wall clock sits behind the Handler clock is stamped ahead of it", async () => {
-  const keyPrefix = freshPrefix();
-  const handler = handlerFor(keyPrefix);
-  const server = await serverClient();
-  const stepped = (await serverNow(server)) + STEP_MS;
-  await seedHandlerClock(server, keyPrefix, stepped);
+  const { keyPrefix, handler, server, stepped } = await steppedStore();
 
   await handler.updateTags(["posts"]);
 
-  const [staleAt] = String(await server.hGet(`${keyPrefix}{tags}`, "posts")).split(":");
+  const [staleAt] = String(await server.hGet(tagKeys(keyPrefix).manifest, "posts")).split(":");
   expect(Number(staleAt)).toBeGreaterThan(stepped);
 });
 
 test("an Entry written while the wall clock sits behind the Handler clock is stamped ahead of it", async () => {
-  const keyPrefix = freshPrefix();
-  const handler = handlerFor(keyPrefix);
-  const server = await serverClient();
-  const stepped = (await serverNow(server)) + STEP_MS;
-  await seedHandlerClock(server, keyPrefix, stepped);
+  const { keyPrefix, handler, server, stepped } = await steppedStore();
 
   await handler.set("posts", Promise.resolve(entryOf({ timestamp: Date.now() })));
 
   expect(await writeTimeOf(server, keyPrefix, "posts")).toBeGreaterThan(stepped - CLOCK_MARGIN_MS);
 });
 
+/**
+ * The behaviour the decision promises, end to end. It is paired with the two cells above,
+ * which pin the mechanism it rests on: this one asserts the outcome but cannot fail while
+ * the stamps are read off the wall clock, since both of them then step together and the
+ * arrangement collapses. Deleting either of the other two as redundant would leave the
+ * mechanism untested.
+ */
 test("an Entry invalidated after the wall clock stepped back is dropped, not served", async () => {
-  const keyPrefix = freshPrefix();
-  const handler = handlerFor(keyPrefix);
-  const server = await serverClient();
-  await seedHandlerClock(server, keyPrefix, (await serverNow(server)) + STEP_MS);
+  const { handler } = await steppedStore();
 
   await handler.set("posts", Promise.resolve(entryOf({ tags: ["posts"] })));
   await handler.updateTags(["posts"]);
@@ -119,10 +103,7 @@ test("an Entry invalidated after the wall clock stepped back is dropped, not ser
 });
 
 test("a tag event stamped after an Entry is later than it, whatever the wall clock did", async () => {
-  const keyPrefix = freshPrefix();
-  const handler = handlerFor(keyPrefix);
-  const server = await serverClient();
-  await seedHandlerClock(server, keyPrefix, (await serverNow(server)) + STEP_MS);
+  const { keyPrefix, handler, server } = await steppedStore();
 
   await handler.set("posts", Promise.resolve(entryOf({ tags: ["posts"], timestamp: Date.now() })));
   const written = await handlerClock(server, keyPrefix);
@@ -133,11 +114,7 @@ test("a tag event stamped after an Entry is later than it, whatever the wall clo
 });
 
 test("a refresh reads the Handler clock and issues no stamp of its own", async () => {
-  const keyPrefix = freshPrefix();
-  const handler = handlerFor(keyPrefix);
-  const server = await serverClient();
-  const stepped = (await serverNow(server)) + STEP_MS;
-  await seedHandlerClock(server, keyPrefix, stepped);
+  const { keyPrefix, handler, server, stepped } = await steppedStore();
 
   await handler.refreshTags();
   await handler.refreshTags();
@@ -146,15 +123,45 @@ test("a refresh reads the Handler clock and issues no stamp of its own", async (
 });
 
 test("a store whose Handler clock was lost starts it again and keeps serving", async () => {
-  const keyPrefix = freshPrefix();
-  const handler = handlerFor(keyPrefix);
-  const server = await serverClient();
+  const { keyPrefix, handler, server } = await store();
   await handler.set("before", Promise.resolve(entryOf({ tags: [] })));
 
-  await server.del(`${keyPrefix}{tags}:clock`);
+  await server.del(tagKeys(keyPrefix).clock);
   await handler.set("after", Promise.resolve(entryOf({ tags: [] })));
   await handler.refreshTags();
 
   expect(await handlerClock(server, keyPrefix)).toBeGreaterThan(0);
   expect(await handler.get("after", [])).toBeDefined();
 });
+
+/** One Instance on a fresh store, and a plain client watching what it writes. */
+async function store(): Promise<{
+  keyPrefix: string;
+  handler: ReturnType<typeof handlerFor>;
+  server: ServerClient;
+}> {
+  const keyPrefix = freshPrefix();
+
+  return { keyPrefix, handler: handlerFor(keyPrefix), server: await serverClient() };
+}
+
+/**
+ * The same, on a store whose Handler clock already sits `STEP_MS` ahead of the server's
+ * wall clock: what that store looks like the instant after the host stepped its clock
+ * back by as much.
+ */
+async function steppedStore(): Promise<Awaited<ReturnType<typeof store>> & { stepped: number }> {
+  const opened = await store();
+  const stepped = (await serverNow(opened.server)) + STEP_MS;
+  await seedHandlerClock(opened.server, opened.keyPrefix, stepped);
+
+  return { ...opened, stepped };
+}
+
+async function writeTimeOf(
+  server: ServerClient,
+  keyPrefix: string,
+  cacheKey: string,
+): Promise<number> {
+  return Number(await server.hGet(entryKey(keyPrefix, cacheKey), WRITE_TIME_FIELD));
+}
