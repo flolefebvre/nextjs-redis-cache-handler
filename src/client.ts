@@ -50,9 +50,9 @@ export interface CacheCommands {
   /** Send one command, argument by argument, exactly as given. */
   sendCommand(args: readonly RedisArgument[]): Promise<unknown>;
   /**
-   * Every field of one hash. The values are `unknown` because this view's type mapping
-   * decides what they are at runtime and the mapping is not carried in this type: the
-   * one caller passes bytes and reads bytes back.
+   * Every field of one hash. The values are `unknown` because the view's type mapping
+   * decides what they are at runtime and that mapping is not carried in this type: the
+   * one caller of it asks for bytes and narrows the fields itself.
    */
   hGetAll(key: RedisArgument): Promise<Record<string, unknown>>;
 }
