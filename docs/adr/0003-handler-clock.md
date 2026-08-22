@@ -44,9 +44,16 @@ read leaves open is exactly the one the manifest's existing backward-step fallba
 X = `TIME` while X > `last`, the wall clock then steps back by S, the next stamp lands at `max(TIME − S, last)`,
 which can sit below the watermark X − 1 s; the following read then returns a clock below that watermark,
 `mergeWith` refuses to merge, and the full read that follows brings the event in. That fallback is load-bearing
-here, not vestigial, and it is also what a lost clock key — evicted, or dropped by a `FLUSHDB` — falls back on:
-the clock starts again from `TIME`, which makes fresh Entries look older than the events already recorded, so
-they are dropped rather than served.
+here, not vestigial.
+
+A lost clock key — evicted, or dropped by a `FLUSHDB` — starts the clock again from `TIME`. Entries written
+after the loss are then stamped below the events already recorded and are dropped rather than served, but the
+other direction is exposed: an Entry stamped at the old floor while the wall clock sat behind it is not beaten
+by a tag event stamped after the loss until the wall clock passes that floor again, at most the size of the
+step that was in progress. That window is accepted rather than closed, because it takes the key being lost
+during a backward step, and because the tag slot is assumed not to be evicted at all — losing the manifest
+itself drops every invalidation it holds, which is the larger exposure and the reason a store this handler is
+pointed at should not evict those keys.
 
 Rejected: a Lamport clock, `max(TIME, last + 1)` persisted at every stamp, which is what this decision first
 was. It breaks ties by construction, but it advances one millisecond per stamp rather than with time, so above
