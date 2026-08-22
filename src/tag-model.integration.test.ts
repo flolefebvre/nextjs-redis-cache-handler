@@ -217,7 +217,7 @@ test("durations without an expire on a never-touched tag make it Stale, never Ex
 
 test("pruning walks the log in batches and leaves the tags it cannot drop in place", async () => {
   const keyPrefix = freshPrefix();
-  const handler = handlerFor(keyPrefix, 1);
+  const handler = handlerFor(keyPrefix, { maxTtl: 1 });
   const server = await serverClient();
   const scheduled = Array.from({ length: 150 }, (_, index) => `scheduled:${String(index)}`);
 
@@ -242,7 +242,7 @@ test("pruning walks the log in batches and leaves the tags it cannot drop in pla
 
 test("a tag event too old to affect any living Entry is pruned by a later one", async () => {
   const keyPrefix = freshPrefix();
-  const handler = handlerFor(keyPrefix, 1);
+  const handler = handlerFor(keyPrefix, { maxTtl: 1 });
   const server = await serverClient();
 
   await handler.updateTags(["ancient"]);

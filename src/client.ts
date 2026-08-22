@@ -1,5 +1,6 @@
 import { createClient } from "redis";
 
+import type { CacheErrorHook } from "./events.js";
 import { readTagManifestScript, updateTagsScript, writeEntryScript } from "./scripts.js";
 
 const CONNECT_TIMEOUT = 2_000;
@@ -50,10 +51,15 @@ export interface CacheClientHandle {
  * reads or writes an Entry must never open a socket. The tuning is fixed: the default
  * reconnect strategy gives up for good on a socket timeout, and node-redis crashes the
  * process when a client has no `error` listener.
+ *
+ * That mandatory listener is where `fail` is called with `connect`: node-redis emits
+ * `error` for socket failures and for every failed connection attempt, outside any
+ * operation of the handler. `fail` is the reporter's, which never throws, so nothing of
+ * a caller's can propagate back into node-redis's emitter.
  */
-export function createCacheClient(url: string): CacheClientHandle {
+export function createCacheClient(url: string, fail: CacheErrorHook): CacheClientHandle {
   const client = createTunedClient(url);
-  client.on("error", () => undefined);
+  client.on("error", (error: unknown) => fail(error, "connect"));
 
   let connecting: Promise<CacheClient> | undefined;
 

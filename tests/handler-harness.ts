@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { createClient } from "redis";
 import { inject, onTestFinished } from "vitest";
 
+import type { CacheErrorHook, CacheErrorOp, CacheEvent, CacheEventHook } from "../src/events.js";
+import type { RedisCacheHandlerOptions } from "../src/options.js";
 import { createRedisCacheHandler } from "../src/redis-cache-handler.js";
 import type { CacheEntry, CacheHandler } from "../src/types.js";
 
@@ -13,15 +15,38 @@ export function freshPrefix(): string {
   return `cache-test:${randomUUID()}:`;
 }
 
-/** One Instance's handler object, closed when the test ends. */
+/** One Instance's handler object on the given Key prefix, closed when the test ends. */
 export function handlerFor(
   keyPrefix: string,
-  maxTtl?: number,
+  overrides: Partial<RedisCacheHandlerOptions> = {},
 ): ReturnType<typeof createRedisCacheHandler> {
-  const handler = createRedisCacheHandler({ url: inject("redisUrl"), keyPrefix, maxTtl });
+  const handler = createRedisCacheHandler({ url: inject("redisUrl"), keyPrefix, ...overrides });
   onTestFinished(() => handler.close());
 
   return handler;
+}
+
+/** Hooks that collect what a handler reports, and what they have collected so far. */
+export function recording(): {
+  events: CacheEvent[];
+  errors: [unknown, CacheErrorOp][];
+  onEvent: CacheEventHook;
+  onError: CacheErrorHook;
+} {
+  const events: CacheEvent[] = [];
+  const errors: [unknown, CacheErrorOp][] = [];
+
+  return {
+    events,
+    errors,
+    onEvent: (event) => events.push(event),
+    onError: (error, op) => errors.push([error, op]),
+  };
+}
+
+/** The operations the recorded errors were reported for, in order. */
+export function opsOf(errors: [unknown, CacheErrorOp][]): CacheErrorOp[] {
+  return errors.map(([, op]) => op);
 }
 
 /** Two Instances of one app: two handler objects on one fresh Key prefix. */

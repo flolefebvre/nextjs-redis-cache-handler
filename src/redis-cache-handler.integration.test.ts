@@ -53,7 +53,7 @@ test("set stores one hash under the Entry key, with the Entry's expire as its TT
 
 test("an Entry that should never expire keeps the TTL cap, whichever way Next.js says never", async () => {
   const keyPrefix = freshPrefix();
-  const handler = handlerFor(keyPrefix, 120);
+  const handler = handlerFor(keyPrefix, { maxTtl: 120 });
   const server = await serverClient();
 
   await handler.set("sentinel", Promise.resolve(entryOf({ expire: 4294967294 })));
@@ -67,7 +67,7 @@ test("an Entry that should never expire keeps the TTL cap, whichever way Next.js
 
 test("an Entry longer-lived than the TTL cap is capped", async () => {
   const keyPrefix = freshPrefix();
-  const handler = handlerFor(keyPrefix, 60);
+  const handler = handlerFor(keyPrefix, { maxTtl: 60 });
 
   await handler.set("capped", Promise.resolve(entryOf({ expire: 3600 })));
   const server = await serverClient();
