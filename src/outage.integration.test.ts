@@ -17,24 +17,24 @@ import {
   type OutageRedis,
 } from "../tests/redis-container.js";
 import type { CacheEvent } from "./events.js";
-import { createRedisCacheHandler } from "./redis-cache-handler.js";
 import type { RedisCacheHandlerOptions } from "./options.js";
+import { createRedisCacheHandler } from "./redis-cache-handler.js";
 
 const TIMEOUT = 200;
 
 const MARGIN = 800;
 
-const CONTAINER_TIMEOUT = 120_000;
-
-const SETTLE_MS = 50;
-
-const LATE_MS = 500;
-
 const PATIENT_TIMEOUT = 10_000;
 
 const PROMPT_MS = 500;
 
+const LATE_MS = 500;
+
+const SETTLE_MS = 50;
+
 const RECOVERY_MS = 30_000;
+
+const CONTAINER_TIMEOUT = 120_000;
 
 describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
   let redis: OutageRedis;
@@ -61,16 +61,6 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
     expect(unhandled).toEqual([]);
   });
 
-  async function paused(): Promise<void> {
-    await redis.pause();
-    onTestFinished(() => redis.unpause());
-  }
-
-  async function stopped(): Promise<void> {
-    await redis.stop();
-    onTestFinished(() => redis.start());
-  }
-
   function handler(keyPrefix: string, overrides: Partial<RedisCacheHandlerOptions> = {}) {
     const built = createRedisCacheHandler({ url: redis.url, keyPrefix, ...overrides });
     onTestFinished(() => built.close());
@@ -78,24 +68,48 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
     return built;
   }
 
+  /** One Instance that has read the Tag manifest once, and everything it reports. */
+  async function ready(keyPrefix: string, overrides: Partial<RedisCacheHandlerOptions> = {}) {
+    const recorded = recording();
+    const instance = handler(keyPrefix, {
+      operationTimeout: TIMEOUT,
+      ...recorded.hooks,
+      ...overrides,
+    });
+    await instance.refreshTags();
+
+    return { instance, recorded };
+  }
+
+  /** What one operation came to against a stalled server, and how long the caller waited. */
+  async function whileStalled<T>(run: () => Promise<T>): Promise<{ outcome: T; waitedMs: number }> {
+    await redis.pause();
+    onTestFinished(() => redis.unpause());
+    const startedAt = Date.now();
+    const outcome = await run();
+    const waitedMs = Date.now() - startedAt;
+    await redis.unpause();
+
+    return { outcome, waitedMs };
+  }
+
+  async function whileDown(): Promise<void> {
+    await redis.stop();
+    onTestFinished(() => redis.start());
+  }
+
   test(
     "a read of a stalled server is a miss `timeout` within the deadline, and is reported",
     { timeout: CONTAINER_TIMEOUT },
     async () => {
-      const recorded = recording();
-      const instance = handler(freshPrefix(), { operationTimeout: TIMEOUT, ...recorded.hooks });
+      const { instance, recorded } = await ready(freshPrefix());
       await instance.set("stalled-read", Promise.resolve(entryOf()));
-      await instance.refreshTags();
       expect(await instance.get("stalled-read", [])).toBeDefined();
 
-      await paused();
-      const startedAt = Date.now();
-      const read = await instance.get("stalled-read", []);
-      const elapsed = Date.now() - startedAt;
-      await redis.unpause();
+      const { outcome, waitedMs } = await whileStalled(() => instance.get("stalled-read", []));
 
-      expect(read).toBeUndefined();
-      expect(elapsed).toBeLessThan(TIMEOUT + MARGIN);
+      expect(outcome).toBeUndefined();
+      expect(waitedMs).toBeLessThan(TIMEOUT + MARGIN);
       expect(lastMiss(recorded.events)).toBe("timeout");
       expect(opsOf(recorded.errors)).toContain("get");
     },
@@ -105,19 +119,14 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
     "a write to a stalled server is dropped within the deadline, and is reported",
     { timeout: CONTAINER_TIMEOUT },
     async () => {
-      const recorded = recording();
-      const instance = handler(freshPrefix(), { operationTimeout: TIMEOUT, ...recorded.hooks });
-      await instance.refreshTags();
+      const { instance, recorded } = await ready(freshPrefix());
 
-      await paused();
-      const startedAt = Date.now();
-      await expect(
+      const { outcome, waitedMs } = await whileStalled(() =>
         instance.set("stalled-write", Promise.resolve(entryOf())),
-      ).resolves.toBeUndefined();
-      const elapsed = Date.now() - startedAt;
-      await redis.unpause();
+      );
 
-      expect(elapsed).toBeLessThan(TIMEOUT + MARGIN);
+      expect(outcome).toBeUndefined();
+      expect(waitedMs).toBeLessThan(TIMEOUT + MARGIN);
       expect(opsOf(recorded.errors)).toContain("set");
       expect(recorded.events.map((event) => event.type)).not.toContain("set");
     },
@@ -127,17 +136,12 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
     "an invalidation of a stalled server gives up within the deadline, and throws",
     { timeout: CONTAINER_TIMEOUT },
     async () => {
-      const recorded = recording();
-      const instance = handler(freshPrefix(), { operationTimeout: TIMEOUT, ...recorded.hooks });
-      await instance.refreshTags();
+      const { instance, recorded } = await ready(freshPrefix());
 
-      await paused();
-      const startedAt = Date.now();
-      await expect(instance.updateTags(["posts"])).rejects.toThrowError();
-      const elapsed = Date.now() - startedAt;
-      await redis.unpause();
+      const { outcome, waitedMs } = await whileStalled(() => settling(instance.updateTags(["a"])));
 
-      expect(elapsed).toBeLessThan(TIMEOUT + MARGIN);
+      expect(outcome).toBe("rejected");
+      expect(waitedMs).toBeLessThan(TIMEOUT + MARGIN);
       expect(opsOf(recorded.errors)).toContain("updateTags");
     },
   );
@@ -146,16 +150,13 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
     "an Entry read before the server stalled is served again once it answers",
     { timeout: CONTAINER_TIMEOUT },
     async () => {
-      const instance = handler(freshPrefix(), { operationTimeout: TIMEOUT });
+      const { instance } = await ready(freshPrefix());
       await instance.set("recovered", Promise.resolve(entryOf()));
-      await instance.refreshTags();
 
-      await paused();
-      expect(await instance.get("recovered", [])).toBeUndefined();
-      await redis.unpause();
+      const { outcome } = await whileStalled(() => instance.get("recovered", []));
 
+      expect(outcome).toBeUndefined();
       const served = await instance.get("recovered", []);
-      expect(served).toBeDefined();
       expect(await bytesOf((served ?? entryOf()).value)).toEqual(VALUE);
     },
   );
@@ -165,20 +166,16 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
     { timeout: CONTAINER_TIMEOUT },
     async () => {
       const keyPrefix = freshPrefix();
-      const recorded = recording();
-      const instance = handler(keyPrefix, { operationTimeout: TIMEOUT, ...recorded.hooks });
+      const { instance, recorded } = await ready(keyPrefix);
       const other = handler(keyPrefix);
       await instance.set("kept-manifest", Promise.resolve(entryOf({ tags: ["posts"] })));
+      await tick();
       await other.updateTags(["posts"]);
       await instance.refreshTags();
 
-      await paused();
-      const startedAt = Date.now();
-      await expect(instance.refreshTags()).resolves.toBeUndefined();
-      const elapsed = Date.now() - startedAt;
-      await redis.unpause();
+      const { waitedMs } = await whileStalled(() => instance.refreshTags());
 
-      expect(elapsed).toBeLessThan(TIMEOUT + MARGIN);
+      expect(waitedMs).toBeLessThan(TIMEOUT + MARGIN);
       expect(opsOf(recorded.errors)).toContain("refreshTags");
       expect(await instance.get("kept-manifest", [])).toBeUndefined();
       expect(lastMiss(recorded.events)).toBe("expired");
@@ -190,19 +187,22 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
     { timeout: CONTAINER_TIMEOUT },
     async () => {
       const keyPrefix = freshPrefix();
-      const instance = handler(keyPrefix, { operationTimeout: TIMEOUT });
+      const { instance } = await ready(keyPrefix);
       const other = handler(keyPrefix, { operationTimeout: PATIENT_TIMEOUT });
       await instance.set("invalidated-late", Promise.resolve(entryOf({ tags: ["posts"] })));
-      await instance.refreshTags();
+      await tick();
       expect(await instance.get("invalidated-late", [])).toBeDefined();
 
-      await paused();
-      const invalidating = other.updateTags(["posts"]);
-      await wait(SETTLE_MS);
-      await redis.unpause();
-      await invalidating;
+      const { outcome } = await whileStalled(async () => {
+        const invalidating = other.updateTags(["posts"]);
+        await wait(SETTLE_MS);
+        await redis.unpause();
 
+        return settling(invalidating);
+      });
       await instance.refreshTags();
+
+      expect(outcome).toBe("resolved");
       expect(await instance.get("invalidated-late", [])).toBeUndefined();
     },
   );
@@ -213,13 +213,11 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
     async () => {
       const keyPrefix = freshPrefix();
       const recorded = recording();
-      const instance = handler(keyPrefix, { operationTimeout: TIMEOUT, ...recorded.hooks });
       const other = handler(keyPrefix);
       await other.set("late-refresh", Promise.resolve(entryOf()));
+      const instance = handler(keyPrefix, { operationTimeout: TIMEOUT, ...recorded.hooks });
 
-      await paused();
-      await expect(instance.refreshTags()).resolves.toBeUndefined();
-      await redis.unpause();
+      await whileStalled(() => instance.refreshTags());
       await wait(LATE_MS);
 
       expect(await instance.get("late-refresh", [])).toBeUndefined();
@@ -228,30 +226,26 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
       expect(await instance.get("late-refresh", [])).toBeDefined();
     },
   );
+
   test(
     "a read and a write against a server that is down give up at once, and are reported",
     { timeout: CONTAINER_TIMEOUT },
     async () => {
-      const recorded = recording();
-      const instance = handler(freshPrefix(), {
+      const { instance, recorded } = await ready(freshPrefix(), {
         operationTimeout: PATIENT_TIMEOUT,
-        ...recorded.hooks,
       });
       await instance.set("server-down", Promise.resolve(entryOf()));
-      await instance.refreshTags();
 
-      await stopped();
+      await whileDown();
       const startedAt = Date.now();
       const read = await instance.get("server-down", []);
-      await expect(
-        instance.set("server-down", Promise.resolve(entryOf())),
-      ).resolves.toBeUndefined();
-      const elapsed = Date.now() - startedAt;
-      await redis.start();
+      const written = await settling(instance.set("server-down", Promise.resolve(entryOf())));
+      const waitedMs = Date.now() - startedAt;
 
       expect(read).toBeUndefined();
+      expect(written).toBe("resolved");
       expect(lastMiss(recorded.events)).toBe("unavailable");
-      expect(elapsed).toBeLessThan(PROMPT_MS);
+      expect(waitedMs).toBeLessThan(PROMPT_MS);
       expect(opsOf(recorded.errors)).toContain("get");
       expect(opsOf(recorded.errors)).toContain("set");
       expect(opsOf(recorded.errors)).toContain("connect");
@@ -263,14 +257,15 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
     { timeout: CONTAINER_TIMEOUT },
     async () => {
       const recorded = recording();
-      await stopped();
+      await whileDown();
       const instance = handler(freshPrefix(), { operationTimeout: TIMEOUT, ...recorded.hooks });
 
       await expect(instance.refreshTags()).resolves.toBeUndefined();
       expect(await instance.get("never-read", [])).toBeUndefined();
-      expect(lastMiss(recorded.events)).toBe("unavailable");
       const startedAt = Date.now();
       await expect(instance.refreshTags()).resolves.toBeUndefined();
+
+      expect(lastMiss(recorded.events)).toBe("unavailable");
       expect(Date.now() - startedAt).toBeLessThan(PROMPT_MS);
       expect(opsOf(recorded.errors)).toContain("refreshTags");
       expect(opsOf(recorded.errors)).toContain("connect");
@@ -294,11 +289,9 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
     { timeout: CONTAINER_TIMEOUT },
     async () => {
       const keyPrefix = freshPrefix();
-      const recorded = recording();
-      const instance = handler(keyPrefix, { operationTimeout: TIMEOUT, ...recorded.hooks });
-      await instance.refreshTags();
+      const { instance, recorded } = await ready(keyPrefix);
 
-      await stopped();
+      await whileDown();
       expect(await instance.get("re-synced", [])).toBeUndefined();
       await redis.start();
       const other = handler(keyPrefix, { operationTimeout: PATIENT_TIMEOUT });
@@ -321,6 +314,14 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
     },
   );
 });
+
+/** How one operation settled, for a test that asserts that and not what it gave back. */
+function settling(operation: Promise<unknown>): Promise<"resolved" | "rejected"> {
+  return operation.then(
+    () => "resolved" as const,
+    () => "rejected" as const,
+  );
+}
 
 function lastMiss(events: CacheEvent[]): string | undefined {
   const misses = events.filter((event) => event.type === "miss");
