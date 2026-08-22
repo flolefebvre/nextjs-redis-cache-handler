@@ -6,6 +6,7 @@ import type { CacheErrorHook, CacheErrorOp, CacheEvent, CacheEventHook } from ".
 import type { RedisCacheHandlerOptions } from "../src/options.js";
 import { createRedisCacheHandler } from "../src/redis-cache-handler.js";
 import type { CacheEntry, CacheHandler } from "../src/types.js";
+import { stopwatch } from "./unit-harness.js";
 
 const TICK_MS = 5;
 
@@ -204,9 +205,9 @@ export async function commandStream(keyPrefix: string): Promise<CommandStream> {
       const seen = (): boolean => commands.some((command) => command.includes(token));
       await marker.echo(token);
 
-      const deadline = Date.now() + SETTLE_TIMEOUT_MS;
+      const elapsed = stopwatch();
       while (!seen()) {
-        if (Date.now() > deadline) throw new Error("the command stream never settled");
+        if (elapsed() > SETTLE_TIMEOUT_MS) throw new Error("the command stream never settled");
         await wait(TICK_MS);
       }
       await monitor.close();

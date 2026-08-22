@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 
+import { stopwatch } from "../tests/unit-harness.js";
 import { DeadlineError } from "./deadline.js";
 import { GaveUpError, withRetries, type RetryBudget } from "./retry.js";
 
@@ -12,6 +13,12 @@ const BACKOFF = 20;
 const BACKOFF_CAP = 80;
 
 const MARGIN = 120;
+
+/**
+ * How early a timer may fire, measured against the monotonic clock: Node's event loop
+ * keeps its time in whole milliseconds, so a pause of `n` ms can read as a hair under it.
+ */
+const TIMER_SLACK = 1;
 
 const WRITTEN = "written";
 
@@ -66,7 +73,7 @@ function starts(): Attempts {
 
   return {
     at,
-    mark: () => at.push(Date.now()),
+    mark: () => at.push(performance.now()),
     gaps: () => at.slice(1).map((start, index) => start - (at[index] ?? start)),
   };
 }
@@ -164,19 +171,19 @@ describe("withRetries", () => {
   });
 
   test("gives up within the budget, whatever the attempts cost", async () => {
-    const startedAt = Date.now();
+    const elapsed = stopwatch();
 
     const retried = withRetries("updateTags", budget(), () => Promise.reject(new Error("no")));
 
     await expect(retried).rejects.toBeInstanceOf(GaveUpError);
-    const waitedMs = Date.now() - startedAt;
+    const waitedMs = elapsed();
     expect(waitedMs).toBeGreaterThanOrEqual(BUDGET - BACKOFF);
     expect(waitedMs).toBeLessThan(BUDGET + MARGIN);
   });
 
   test("bounds every attempt on its own, so a stalled one does not spend the budget", async () => {
     const attempts = starts();
-    const startedAt = Date.now();
+    const elapsed = stopwatch();
 
     const retried = withRetries("updateTags", budget(), async () => {
       attempts.mark();
@@ -185,7 +192,7 @@ describe("withRetries", () => {
 
     await expect(retried).rejects.toMatchObject({ cause: expect.any(DeadlineError) });
     expect(attempts.at.length).toBeGreaterThan(1);
-    expect(Date.now() - startedAt).toBeLessThan(BUDGET + MARGIN);
+    expect(elapsed()).toBeLessThan(BUDGET + MARGIN);
   });
 
   test("waits longer between attempts as they keep failing, up to the cap", async () => {
@@ -201,7 +208,7 @@ describe("withRetries", () => {
     const gaps = attempts.gaps();
     expect(gaps.length).toBeGreaterThanOrEqual(3);
     expect(gaps.at(0) ?? 0).toBeLessThan(BACKOFF * 2);
-    expect(gaps.at(1) ?? 0).toBeGreaterThanOrEqual(BACKOFF * 2);
+    expect(gaps.at(1) ?? 0).toBeGreaterThanOrEqual(BACKOFF * 2 - TIMER_SLACK);
     expect(Math.max(...gaps)).toBeLessThan(BACKOFF_CAP + MARGIN);
   });
 });

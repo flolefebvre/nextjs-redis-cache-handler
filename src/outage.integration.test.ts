@@ -17,6 +17,7 @@ import {
   testImage,
   type OutageRedis,
 } from "../tests/redis-container.js";
+import { stopwatch } from "../tests/unit-harness.js";
 import type { CacheErrorOp, CacheEvent } from "./events.js";
 import type { RedisCacheHandlerOptions } from "./options.js";
 import { createRedisCacheHandler } from "./redis-cache-handler.js";
@@ -92,9 +93,9 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
   async function whileStalled<T>(run: () => Promise<T>): Promise<{ outcome: T; waitedMs: number }> {
     await redis.pause();
     onTestFinished(() => redis.unpause());
-    const startedAt = Date.now();
+    const elapsed = stopwatch();
     const outcome = await run();
-    const waitedMs = Date.now() - startedAt;
+    const waitedMs = elapsed();
     await redis.unpause();
 
     return { outcome, waitedMs };
@@ -179,9 +180,9 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
       });
 
       await whileDown();
-      const startedAt = Date.now();
+      const elapsed = stopwatch();
       const outcome = await settling(instance.updateTags(["a"]));
-      const waitedMs = Date.now() - startedAt;
+      const waitedMs = elapsed();
 
       expectGaveUp(outcome, waitedMs, recorded.errors);
     },
@@ -314,10 +315,10 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
       await instance.set("server-down", Promise.resolve(entryOf()));
 
       await whileDown();
-      const startedAt = Date.now();
+      const elapsed = stopwatch();
       const read = await instance.get("server-down", []);
       const written = await settling(instance.set("server-down", Promise.resolve(entryOf())));
-      const waitedMs = Date.now() - startedAt;
+      const waitedMs = elapsed();
 
       expect(read).toBeUndefined();
       expect(written).toBe("resolved");
@@ -339,11 +340,11 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
 
       await expect(instance.refreshTags()).resolves.toBeUndefined();
       expect(await instance.get("never-read", [])).toBeUndefined();
-      const startedAt = Date.now();
+      const elapsed = stopwatch();
       await expect(instance.refreshTags()).resolves.toBeUndefined();
 
       expect(lastMiss(recorded.events)).toBe("unavailable");
-      expect(Date.now() - startedAt).toBeLessThan(PROMPT_MS);
+      expect(elapsed()).toBeLessThan(PROMPT_MS);
       expect(opsOf(recorded.errors)).toContain("refreshTags");
       expect(opsOf(recorded.errors)).toContain("connect");
 
