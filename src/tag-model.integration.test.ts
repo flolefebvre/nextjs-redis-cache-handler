@@ -164,7 +164,7 @@ test("an outer Entry carrying an inner scope's tag misses when that inner tag is
   expect(await instanceB.get("outer", [])).toBeUndefined();
 });
 
-test("an Entry whose timestamp is ahead of the server clock is still dropped by a later tag event", async () => {
+test("an Entry claiming a generation start in the future is stamped no later than the server clock", async () => {
   const keyPrefix = freshPrefix();
   const [instanceA, instanceB] = [handlerFor(keyPrefix), handlerFor(keyPrefix)];
   const ahead = entryOf({ tags: ["posts"], timestamp: Date.now() + 5_000 });
@@ -175,6 +175,32 @@ test("an Entry whose timestamp is ahead of the server clock is still dropped by 
   await instanceB.refreshTags();
 
   expect(await instanceB.get("skewed", [])).toBeUndefined();
+});
+
+test("an Entry whose render was running when the tag event landed is dropped", async () => {
+  const keyPrefix = freshPrefix();
+  const [instanceA, instanceB] = [handlerFor(keyPrefix), handlerFor(keyPrefix)];
+  const started = Date.now() - 5_000;
+
+  await instanceA.updateTags(["posts"]);
+  await instanceA.set("slow", Promise.resolve(entryOf({ tags: ["posts"], timestamp: started })));
+  await instanceB.refreshTags();
+
+  expect(await instanceB.get("slow", [])).toBeUndefined();
+});
+
+test("an Entry whose render started after the tag event is served, however long it took", async () => {
+  const keyPrefix = freshPrefix();
+  const [instanceA, instanceB] = [handlerFor(keyPrefix), handlerFor(keyPrefix)];
+
+  await instanceA.updateTags(["posts"]);
+  await tick();
+  const started = Date.now();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await instanceA.set("slow", Promise.resolve(entryOf({ tags: ["posts"], timestamp: started })));
+  await instanceB.refreshTags();
+
+  expect(await instanceB.get("slow", [])).toBeDefined();
 });
 
 test("an Entry past its revalidate window is served once more while it is regenerated", async () => {
