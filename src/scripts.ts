@@ -17,6 +17,8 @@ local function expiredAtOf(value)
 end
 `;
 
+const PRUNE_BATCH = 100;
+
 const UPDATE_TAGS = `
 ${EXPIRED_AT_OF}
 local maxTtl = tonumber(ARGV[1])
@@ -29,19 +31,21 @@ for index = 4, #ARGV do
   if mode == 'expire-after' then
     expiredAt = now + expireMs
   elseif mode == 'expire-unchanged' then
-    expiredAt = expiredAtOf(redis.call('HGET', KEYS[1], tag)) or now
+    expiredAt = expiredAtOf(redis.call('HGET', KEYS[1], tag)) or 0
   end
   redis.call('HSET', KEYS[1], tag, string.format('%d', now) .. ':' .. string.format('%d', expiredAt))
   redis.call('ZADD', KEYS[2], now, tag)
 end
 local cutoff = now - maxTtl
-local stale = redis.call('ZRANGE', KEYS[2], '-inf', string.format('%d', cutoff), 'BYSCORE')
-for index = 1, #stale do
-  local tag = stale[index]
+local batch = redis.call('ZRANGE', KEYS[2], '-inf', string.format('%d', cutoff), 'BYSCORE', 'LIMIT', 0, ${PRUNE_BATCH})
+for index = 1, #batch do
+  local tag = batch[index]
   local expiredAt = expiredAtOf(redis.call('HGET', KEYS[1], tag))
   if not expiredAt or expiredAt <= cutoff then
     redis.call('ZREM', KEYS[2], tag)
     redis.call('HDEL', KEYS[1], tag)
+  else
+    redis.call('ZADD', KEYS[2], now, tag)
   end
 end
 return 1
@@ -154,7 +158,17 @@ const updateTagsConfig: Omit<UpdateTagsScript, "SHA1"> = {
  *
  * It is a script because a client timestamp or a `TIME` read in a separate round trip
  * both lose events under concurrency, and because the three `durations` forms need the
- * tag's current `expiredAt` to be read and rewritten without a race.
+ * tag's current `expiredAt` to be read and rewritten without a race. A tag never made
+ * Expired keeps `expiredAt` at `0`, which no Entry can ever be older than, so that a
+ * profile without an `expire` marks the tag Stale and nothing more.
+ *
+ * Pruning walks at most one batch of the oldest log members per call, and re-adds at the
+ * current time every member it examined but could not drop. A log score therefore means
+ * "when the tag was last written, or last examined for pruning", never more than one
+ * `maxTtl` behind the tag's own event: without the re-add, tags with a far-future
+ * expiration would sit at the front of the log forever and be re-read on every single
+ * tag event. The watermark read of a later version sees such a re-added member once per
+ * `maxTtl` and overwrites its local state with the identical value.
  */
 export const updateTagsScript: UpdateTagsScript = defineScript(updateTagsConfig);
 

@@ -5,6 +5,7 @@ import {
   freshPrefix,
   handlerFor,
   instancePair,
+  readAfterRefresh,
   serverClient,
   storeBefore,
   tick,
@@ -119,12 +120,8 @@ test("durations without an expire make the tag Stale and leave its expiration wh
   await storeBefore(instanceA, "posts", { tags: ["posts"] });
   await instanceA.updateTags(["posts"], { expire: 31536000 });
   await instanceA.updateTags(["posts"], {});
-  await instanceB.refreshTags();
 
-  const hit = (await instanceB.get("posts", [])) as CacheEntry;
-
-  expect(hit).toBeDefined();
-  expect(hit.revalidate).toBe(-1);
+  expect((await readAfterRefresh(instanceB, "posts"))?.revalidate).toBe(-1);
 });
 
 test("a Soft tag expired elsewhere makes the Entry miss, and is never stored on it", async () => {
@@ -207,6 +204,40 @@ test("getExpiration never asks the wrapper to discard anything", async () => {
 
   await expect(handler.getExpiration([])).resolves.toBe(Infinity);
   await expect(handler.getExpiration(["posts", "_N_T_/blog"])).resolves.toBe(Infinity);
+});
+
+test("durations without an expire on a never-touched tag make it Stale, never Expired", async () => {
+  const { instanceA, instanceB } = instancePair();
+
+  await storeBefore(instanceA, "posts", { tags: ["posts"] });
+  await instanceA.updateTags(["posts"], {});
+
+  expect((await readAfterRefresh(instanceB, "posts"))?.revalidate).toBe(-1);
+});
+
+test("pruning walks the log in batches and leaves the tags it cannot drop in place", async () => {
+  const keyPrefix = freshPrefix();
+  const handler = handlerFor(keyPrefix, 1);
+  const server = await serverClient();
+  const scheduled = Array.from({ length: 150 }, (_, index) => `scheduled:${String(index)}`);
+
+  await handler.updateTags(scheduled, { expire: 31536000 });
+  await tick();
+  await handler.updateTags(["ancient"]);
+  await new Promise((resolve) => setTimeout(resolve, 1_200));
+  await handler.updateTags(["recent"]);
+
+  expect(await server.hKeys(`${keyPrefix}{tags}`)).toContain("ancient");
+
+  await handler.updateTags(["recent"]);
+  await handler.updateTags(["recent"]);
+  const tags = await server.hKeys(`${keyPrefix}{tags}`);
+  const logged = await server.zRange(`${keyPrefix}{tags}:log`, 0, -1);
+
+  expect(tags).not.toContain("ancient");
+  expect(logged).not.toContain("ancient");
+  expect(tags).toEqual(expect.arrayContaining(scheduled));
+  expect(logged).toEqual(expect.arrayContaining(scheduled));
 });
 
 test("a tag event too old to affect any living Entry is pruned by a later one", async () => {

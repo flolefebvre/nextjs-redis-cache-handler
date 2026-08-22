@@ -98,6 +98,17 @@ export async function storeBefore(
   await tick();
 }
 
+/** What one Instance reads for `cacheKey` once it has taken in the latest tag events. */
+export async function readAfterRefresh(
+  instance: CacheHandler,
+  cacheKey: string,
+  softTags: string[] = [],
+): Promise<CacheEntry | undefined> {
+  await instance.refreshTags();
+
+  return instance.get(cacheKey, softTags);
+}
+
 /** Everything a returned Entry carries besides its value. */
 export function timingsOf(entry: CacheEntry): Omit<CacheEntry, "value"> {
   return {

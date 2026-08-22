@@ -105,6 +105,14 @@ test("a tag whose expiration is still in the future does not expire the Entry ye
   expect(tagVerdict(manifest, ["posts"], [], NOW - 20, NOW)).toBe("stale");
 });
 
+test("a tag that was never made Expired only ever makes an Entry Stale", () => {
+  const manifest = states({ posts: { staleAt: NOW, expiredAt: 0 } });
+
+  expect(manifest.get("posts")?.expiredAt).toBe(0);
+  expect(tagVerdict(manifest, ["posts"], [], NOW + 1, NOW)).toBe("fresh");
+  expect(tagVerdict(manifest, ["posts"], [], NOW - 1, NOW)).toBe("stale");
+});
+
 test("a tag made Stale after the Entry was written makes it Stale", () => {
   const manifest = states({ posts: { staleAt: NOW, expiredAt: NOW + 1000 } });
 
