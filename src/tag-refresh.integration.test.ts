@@ -69,7 +69,7 @@ test("the first refresh of a process reads the whole manifest", async () => {
 
   await handler.refreshTags();
 
-  expect(tagCommandNames(await stream.settled(), keyPrefix)).toEqual(["EVALSHA", "HGETALL"]);
+  expect(tagCommandNames(await stream.settled(), keyPrefix)).toEqual(["EVALSHA", "GET", "HGETALL"]);
 });
 
 test("ten concurrent refreshes are one read round trip, and all of them resolve", async () => {
@@ -86,6 +86,7 @@ test("ten concurrent refreshes are one read round trip, and all of them resolve"
   expect(refreshes).toEqual(Array.from({ length: 10 }, () => "done"));
   expect(tagCommandNames(await stream.settled(), keyPrefix)).toEqual([
     "EVALSHA",
+    "GET",
     "ZCARD",
     "HLEN",
     "ZRANGE",
@@ -119,7 +120,18 @@ test("both reads of the Tag manifest stay within the portable command set", asyn
 
   const names = new Set(tagCommandNames(await stream.settled(), keyPrefix));
   expect(names).toEqual(
-    new Set(["EVALSHA", "HGETALL", "ZCARD", "HLEN", "ZRANGE", "HMGET", "HSET", "ZADD"]),
+    new Set([
+      "EVALSHA",
+      "GET",
+      "SET",
+      "HGETALL",
+      "ZCARD",
+      "HLEN",
+      "ZRANGE",
+      "HMGET",
+      "HSET",
+      "ZADD",
+    ]),
   );
 });
 

@@ -3,8 +3,9 @@
 Tag events are stamped with Redis `TIME` (ADR-less, decided with the watermark read), but `entry.timestamp` is the
 app instance's `Date.now()` at generation start. Comparing the two across clocks is the one place skew can keep a
 stale Entry: an app clock ahead of Redis makes a render that started _before_ a mutation look written _after_ it,
-and the Entry is then served until `expire`. So `set` stores a second field, the Write time: the script receives
-`age = Date.now() − entry.timestamp` (measured on one clock, skew-free) and writes `TIME − age`. `get` compares
+and the Entry is then served until `expire`. So `set` stores a second field, the Write time: `set` measures
+`age = Date.now() − entry.timestamp` (on one clock, skew-free) and stores `stamp − age`, the stamp coming from
+the Handler clock of ADR 0003 — this decision's "Redis clock", `TIME` until that ADR replaced it. `get` compares
 the Tag manifest against the Write time only; `entry.timestamp` is stored and returned untouched, so every
 duration check the Next.js wrapper does (`expire`, `revalidate`) is unaffected. `getExpiration` returns `Infinity`
 so the soft-tag check also happens in `get`, against the same clock (a declared divergence from the Oracle).

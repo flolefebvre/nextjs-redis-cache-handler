@@ -46,26 +46,29 @@ export function entryTtlSeconds(expire: number, maxTtl: number, age: number): nu
 /**
  * How old the Entry is at the moment it is written, measured on the app's clock alone so
  * that skew against the server cancels out (ADR 0002). An Entry that claims to have been
- * generated in the future is treated as generated now: a Write time ahead of the server
- * clock would let the Entry survive tag events that came after it.
+ * generated in the future is treated as generated now: a Write time ahead of the stamp it
+ * is taken from would let the Entry survive tag events that came after it.
  */
 export function entryAge(timestamp: Timestamp, appNow: Timestamp): number {
   return Math.max(0, appNow - timestamp);
 }
 
-/** Write the Entry and its TTL in one atomic unit, stamped with the Write time. */
+/**
+ * Write the Entry and its TTL in one atomic unit, stamped with the Write time the caller
+ * took from the Handler clock.
+ */
 export async function writeEntry(
   client: CacheClient,
   key: string,
   entry: BufferedEntry,
-  age: number,
+  writeTime: Timestamp,
   ttlSeconds: number,
 ): Promise<void> {
   await runScript(
     client,
     writeEntryScript,
     [key],
-    [String(age), String(ttlSeconds), ...encodeEntryFields(entry)],
+    [String(Math.floor(writeTime)), String(ttlSeconds), ...encodeEntryFields(entry)],
   );
 }
 
