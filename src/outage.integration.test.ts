@@ -27,6 +27,10 @@ const CONTAINER_TIMEOUT = 120_000;
 
 const SETTLE_MS = 50;
 
+const LATE_MS = 500;
+
+const PATIENT_TIMEOUT = 10_000;
+
 describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
   let redis: OutageRedis;
   const unhandled: unknown[] = [];
@@ -138,6 +142,75 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
       const served = await instance.get("recovered", []);
       expect(served).toBeDefined();
       expect(await bytesOf((served ?? entryOf()).value)).toEqual(VALUE);
+    },
+  );
+
+  test(
+    "a refresh of a stalled server keeps the manifest read before it stalled",
+    { timeout: CONTAINER_TIMEOUT },
+    async () => {
+      const keyPrefix = freshPrefix();
+      const recorded = recording();
+      const instance = handler(keyPrefix, { operationTimeout: TIMEOUT, ...recorded.hooks });
+      const other = handler(keyPrefix);
+      await instance.set("kept-manifest", Promise.resolve(entryOf({ tags: ["posts"] })));
+      await other.updateTags(["posts"]);
+      await instance.refreshTags();
+
+      await redis.pause();
+      const startedAt = Date.now();
+      await expect(instance.refreshTags()).resolves.toBeUndefined();
+      const elapsed = Date.now() - startedAt;
+      await redis.unpause();
+
+      expect(elapsed).toBeLessThan(TIMEOUT + MARGIN);
+      expect(opsOf(recorded.errors)).toContain("refreshTags");
+      expect(await instance.get("kept-manifest", [])).toBeUndefined();
+      expect(lastMiss(recorded.events)).toBe("expired");
+    },
+  );
+
+  test(
+    "an invalidation issued while the server was stalled is applied after one refresh",
+    { timeout: CONTAINER_TIMEOUT },
+    async () => {
+      const keyPrefix = freshPrefix();
+      const instance = handler(keyPrefix, { operationTimeout: TIMEOUT });
+      const other = handler(keyPrefix, { operationTimeout: PATIENT_TIMEOUT });
+      await instance.set("invalidated-late", Promise.resolve(entryOf({ tags: ["posts"] })));
+      await instance.refreshTags();
+      expect(await instance.get("invalidated-late", [])).toBeDefined();
+
+      await redis.pause();
+      const invalidating = other.updateTags(["posts"]);
+      await wait(SETTLE_MS);
+      await redis.unpause();
+      await invalidating;
+
+      await instance.refreshTags();
+      expect(await instance.get("invalidated-late", [])).toBeUndefined();
+    },
+  );
+
+  test(
+    "a refresh that ran out of time never lands, however late its read answers",
+    { timeout: CONTAINER_TIMEOUT },
+    async () => {
+      const keyPrefix = freshPrefix();
+      const recorded = recording();
+      const instance = handler(keyPrefix, { operationTimeout: TIMEOUT, ...recorded.hooks });
+      const other = handler(keyPrefix);
+      await other.set("late-refresh", Promise.resolve(entryOf()));
+
+      await redis.pause();
+      await expect(instance.refreshTags()).resolves.toBeUndefined();
+      await redis.unpause();
+      await wait(LATE_MS);
+
+      expect(await instance.get("late-refresh", [])).toBeUndefined();
+      expect(lastMiss(recorded.events)).toBe("unavailable");
+      await instance.refreshTags();
+      expect(await instance.get("late-refresh", [])).toBeDefined();
     },
   );
 });

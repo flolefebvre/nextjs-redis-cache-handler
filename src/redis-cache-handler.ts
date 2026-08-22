@@ -133,13 +133,14 @@ export function createRedisCacheHandler(
     }
   }
 
-  async function refresh(): Promise<void> {
+  async function refresh(passed: () => boolean): Promise<void> {
     const connected = await client.connected();
     const reconnects = client.reconnects();
     const since = reconnects === readReconnects ? manifest.since() : undefined;
 
     if (since !== undefined) {
       const events = await readTagManifestSince(connected, keyPrefix, since);
+      if (passed()) return;
       if (events !== undefined && manifest.mergeWith(events)) {
         readReconnects = reconnects;
 
@@ -147,7 +148,10 @@ export function createRedisCacheHandler(
       }
     }
 
-    manifest.replaceWith(await readTagManifest(connected, keyPrefix));
+    const states = await readTagManifest(connected, keyPrefix);
+    if (passed()) return;
+
+    manifest.replaceWith(states);
     readReconnects = reconnects;
   }
 
@@ -170,7 +174,7 @@ export function createRedisCacheHandler(
       });
     },
     refreshTags(): Promise<void> {
-      refreshing ??= refresh()
+      refreshing ??= withDeadline(operationTimeout, refresh)
         .catch((error: unknown) => {
           reporter.fail(error, "refreshTags");
         })
