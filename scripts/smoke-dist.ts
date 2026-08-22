@@ -2,7 +2,12 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const CONSUMER = fileURLToPath(new URL("../tests/dist-consumer/", import.meta.url));
-const A_STORE = "redis://127.0.0.1:6379";
+
+/**
+ * A store nobody is listening on: the smokes must never depend on what the host happens
+ * to be running, and nothing here connects — that is what they check.
+ */
+const NO_SERVER_THERE = "redis://127.0.0.1:1";
 const TIMEOUT_MS = 30_000;
 
 interface Smoke {
@@ -13,8 +18,13 @@ interface Smoke {
 }
 
 const SMOKES: Smoke[] = [
-  { what: "ESM import of ./handler", file: "smoke.mjs", url: A_STORE, expected: "" },
-  { what: "CommonJS require.resolve of ./handler", file: "smoke.cjs", url: A_STORE, expected: "" },
+  { what: "ESM import of ./handler", file: "smoke.mjs", url: NO_SERVER_THERE, expected: "" },
+  {
+    what: "CommonJS require.resolve of ./handler",
+    file: "smoke.cjs",
+    url: NO_SERVER_THERE,
+    expected: "",
+  },
   { what: "the entry with no REDIS_URL", file: "smoke.mjs", expected: /^[^\n]*REDIS_URL[^\n]*\n$/ },
 ];
 
