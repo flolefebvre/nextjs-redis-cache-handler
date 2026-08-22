@@ -5,6 +5,8 @@ const NEVER_EXPIRES = 4_294_967_294;
 
 const STATE_SEPARATOR = ":";
 
+const BAD_REPLY = "unreadable tag manifest reply";
+
 /** When a tag was last made Stale and when it was last made Expired, on the Redis clock. */
 export interface TagState {
   staleAt: Timestamp;
@@ -27,25 +29,38 @@ export interface TagDurations {
 }
 
 /**
- * The tags a manifest hash holds. A value written by another version of this library, or
- * by anything else, is dropped rather than parsed into a state that could hide an Entry.
+ * The manifest a full read brought back: the server clock it was read at, and the tags
+ * the hash held. A value written by another version of this library, or by anything
+ * else, is dropped rather than parsed into a state that could hide an Entry; a reply
+ * that is not a manifest at all throws, so that the caller keeps its previous copy
+ * instead of behaving as if every tag were untouched.
  */
-export function parseTagStates(hash: Record<string, string>): Map<string, TagState> {
+export function parseTagRefresh(reply: unknown): TagRefresh {
+  if (!Array.isArray(reply) || reply.length !== 2) throw new Error(BAD_REPLY);
+
+  const serverNow = Number(reply[0]);
+  const fields: unknown = reply[1];
+  if (!Number.isFinite(serverNow)) throw new Error(BAD_REPLY);
+  if (!Array.isArray(fields) || fields.length % 2 !== 0) throw new Error(BAD_REPLY);
+
   const states = new Map<string, TagState>();
-
-  for (const [tag, value] of Object.entries(hash)) {
-    const parts = value.split(STATE_SEPARATOR);
-    if (parts.length !== 2) continue;
-
-    const staleAt = Number(parts[0]);
-    const expiredAt = Number(parts[1]);
-    if (parts[0] === "" || parts[1] === "") continue;
-    if (!Number.isFinite(staleAt) || !Number.isFinite(expiredAt)) continue;
-
-    states.set(tag, { staleAt, expiredAt });
+  for (let index = 0; index < fields.length; index += 2) {
+    const state = parseTagState(String(fields[index + 1]));
+    if (state !== undefined) states.set(String(fields[index]), state);
   }
 
-  return states;
+  return { serverNow, states };
+}
+
+function parseTagState(value: string): TagState | undefined {
+  const parts = value.split(STATE_SEPARATOR);
+  if (parts.length !== 2 || parts[0] === "" || parts[1] === "") return undefined;
+
+  const staleAt = Number(parts[0]);
+  const expiredAt = Number(parts[1]);
+  if (!Number.isFinite(staleAt) || !Number.isFinite(expiredAt)) return undefined;
+
+  return { staleAt, expiredAt };
 }
 
 /**

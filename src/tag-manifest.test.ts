@@ -3,7 +3,7 @@ import { expect, test } from "vitest";
 import {
   createTagManifest,
   encodeTagDurations,
-  parseTagStates,
+  parseTagRefresh,
   tagVerdict,
   type TagState,
 } from "./tag-manifest.js";
@@ -15,19 +15,31 @@ function states(entries: Record<string, TagState>): Map<string, TagState> {
 }
 
 test("a manifest value is the two instants the tag was last made Stale and Expired", () => {
-  expect(parseTagStates({ posts: "10:20", "post:1": "30:30" })).toEqual(
+  const refresh = parseTagRefresh(["10", ["posts", "10:20", "post:1", "30:30"]]);
+
+  expect(refresh.serverNow).toBe(10);
+  expect(refresh.states).toEqual(
     states({ posts: { staleAt: 10, expiredAt: 20 }, "post:1": { staleAt: 30, expiredAt: 30 } }),
   );
 });
 
 test("a manifest value that is not two numbers is dropped, the rest is kept", () => {
-  expect(
-    parseTagStates({ ok: "1:2", missing: "1", empty: "", words: "a:b", extra: "1:2:3" }),
-  ).toEqual(states({ ok: { staleAt: 1, expiredAt: 2 } }));
+  const fields = ["ok", "1:2", "missing", "1", "empty", "", "words", "a:b", "extra", "1:2:3"];
+
+  expect(parseTagRefresh(["1", fields]).states).toEqual(
+    states({ ok: { staleAt: 1, expiredAt: 2 } }),
+  );
 });
 
-test("an empty manifest hash parses to an empty local copy", () => {
-  expect(parseTagStates({})).toEqual(new Map());
+test("an empty manifest reads as an empty local copy", () => {
+  expect(parseTagRefresh(["1", []])).toEqual({ serverNow: 1, states: new Map() });
+});
+
+test("a reply that is not a manifest is not decoded into an empty manifest", () => {
+  expect(() => parseTagRefresh(undefined)).toThrow();
+  expect(() => parseTagRefresh(["1"])).toThrow();
+  expect(() => parseTagRefresh(["now", []])).toThrow();
+  expect(() => parseTagRefresh(["1", ["odd"]])).toThrow();
 });
 
 test("no durations expires the tags now", () => {

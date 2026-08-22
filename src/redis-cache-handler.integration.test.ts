@@ -1,73 +1,20 @@
-import { randomUUID } from "node:crypto";
-import { createClient } from "redis";
-import { expect, inject, onTestFinished, test } from "vitest";
+import { expect, test } from "vitest";
 
-import { createRedisCacheHandler } from "./redis-cache-handler.js";
+import {
+  VALUE,
+  bytesOf,
+  entryOf,
+  freshPrefix,
+  handlerFor,
+  serverClient,
+  timingsOf,
+} from "../tests/handler-harness.js";
 import type { CacheEntry } from "./types.js";
-
-const VALUE = Uint8Array.from([0x00, 0xff, 0xfe, 0x80, 0x01, 0xc3, 0x28]);
-
-function freshPrefix(): string {
-  return `cache-test:${randomUUID()}:`;
-}
-
-function handlerFor(keyPrefix: string, maxTtl?: number) {
-  const handler = createRedisCacheHandler({ url: inject("redisUrl"), keyPrefix, maxTtl });
-  onTestFinished(() => handler.close());
-
-  return handler;
-}
-
-async function serverClient() {
-  const client = createClient({ url: inject("redisUrl") });
-  client.on("error", () => undefined);
-  await client.connect();
-  onTestFinished(() => client.close());
-
-  return client;
-}
-
-function streamOf(bytes: Uint8Array): ReadableStream<Uint8Array> {
-  return new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(bytes);
-      controller.close();
-    },
-  });
-}
-
-async function bytesOf(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
-  const chunks: Uint8Array[] = [];
-  for await (const chunk of stream) chunks.push(chunk);
-
-  return Uint8Array.from(Buffer.concat(chunks));
-}
-
-function entryOf(overrides: Partial<CacheEntry> = {}): CacheEntry {
-  return {
-    value: streamOf(VALUE),
-    tags: ["posts", "post:1"],
-    stale: 300,
-    timestamp: Date.now(),
-    expire: 900,
-    revalidate: 60,
-    ...overrides,
-  };
-}
-
-function timingsOf(entry: CacheEntry): Omit<CacheEntry, "value"> {
-  return {
-    tags: entry.tags,
-    stale: entry.stale,
-    timestamp: entry.timestamp,
-    expire: entry.expire,
-    revalidate: entry.revalidate,
-  };
-}
 
 test("an Entry written by set comes back from get unchanged", async () => {
   const handler = handlerFor(freshPrefix());
   const entry = entryOf();
+  await handler.refreshTags();
 
   await handler.set("key", Promise.resolve(entry));
   const hit = await handler.get("key", []);
@@ -86,6 +33,7 @@ test("what one handler writes another handler on the same Key prefix reads", asy
   ];
 
   await instanceA.set("shared", Promise.resolve(entryOf()));
+  await Promise.all([instanceB.refreshTags(), elsewhere.refreshTags()]);
 
   expect(await instanceB.get("shared", [])).toBeDefined();
   expect(await elsewhere.get("shared", [])).toBeUndefined();
@@ -130,6 +78,7 @@ test("an Entry longer-lived than the TTL cap is capped", async () => {
 test("a negative revalidate is stored and returned unchanged", async () => {
   const handler = handlerFor(freshPrefix());
   const entry = entryOf({ revalidate: -1 });
+  await handler.refreshTags();
 
   await handler.set("stale-entry", Promise.resolve(entry));
   const hit = await handler.get("stale-entry", []);
@@ -141,6 +90,7 @@ test("an Entry that is already expired is not stored and reads as a miss", async
   const keyPrefix = freshPrefix();
   const handler = handlerFor(keyPrefix);
   const server = await serverClient();
+  await handler.refreshTags();
 
   await handler.set("gone", Promise.resolve(entryOf({ expire: -1 })));
   await handler.set("zero", Promise.resolve(entryOf({ expire: 0 })));
@@ -153,6 +103,7 @@ test("an Entry that is already expired is not stored and reads as a miss", async
 test("a get issued while a set for the same key is still pending returns the stored Entry", async () => {
   const handler = handlerFor(freshPrefix());
   const entry = entryOf();
+  await handler.refreshTags();
   let complete: (entry: CacheEntry) => void = () => undefined;
   const pendingEntry = new Promise<CacheEntry>((resolve) => {
     complete = resolve;
@@ -171,14 +122,7 @@ test("a get issued while a set for the same key is still pending returns the sto
 
 test("a key nobody wrote is a miss", async () => {
   const handler = handlerFor(freshPrefix());
+  await handler.refreshTags();
 
   expect(await handler.get("never-written", [])).toBeUndefined();
-});
-
-test("the methods the tag model will own satisfy the interface", async () => {
-  const handler = handlerFor(freshPrefix());
-
-  await expect(handler.refreshTags()).resolves.toBeUndefined();
-  await expect(handler.updateTags(["posts"])).resolves.toBeUndefined();
-  await expect(handler.getExpiration(["posts"])).resolves.toBe(Infinity);
 });

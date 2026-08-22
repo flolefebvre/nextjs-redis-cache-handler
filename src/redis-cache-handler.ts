@@ -2,7 +2,20 @@ import { createCacheClient } from "./client.js";
 import type { BufferedEntry, StoredEntry } from "./entry-hash.js";
 import { entryKey, entryTtlSeconds, readEntry, writeEntry } from "./entry-store.js";
 import { DEFAULT_KEY_PREFIX, DEFAULT_MAX_TTL, type RedisCacheHandlerOptions } from "./options.js";
+import { createTagManifest } from "./tag-manifest.js";
+import { readTagManifest, writeTagEvents } from "./tag-store.js";
 import type { CacheEntry, CacheHandler, Timestamp } from "./types.js";
+
+const STALE_REVALIDATE = -1;
+
+/**
+ * What a read of one key came to, before it is flattened into what the interface returns:
+ * an Entry to serve, an Entry to serve once more while the wrapper regenerates it, or a
+ * miss and why. The reason is what the hooks of a later version report.
+ */
+type ReadOutcome =
+  | { kind: "hit" | "stale"; entry: CacheEntry }
+  | { kind: "miss"; reason: "absent" | "expired" | "unavailable" };
 
 /**
  * Build a Cache Handler backed by Redis or Valkey, so that every Instance of a
@@ -15,7 +28,11 @@ import type { CacheEntry, CacheHandler, Timestamp } from "./types.js";
  *
  * Neither `get` nor `set` ever rejects: a read that fails is a miss and a write that
  * fails is dropped. Next.js awaits pending writes after a Server Action, so a rejected
- * `set` would fail the user's action over a cache blip.
+ * `set` would fail the user's action over a cache blip. `refreshTags` never rejects
+ * either — a rejection would fail every cache read of the request — but until one full
+ * read of the Tag manifest has succeeded in this process every `get` is a miss: a miss
+ * is slow, serving an Entry a mutation has already dropped is wrong. `updateTags` does
+ * reject, so that a lost invalidation fails the Server Action visibly.
  */
 export function createRedisCacheHandler(
   options: RedisCacheHandlerOptions,
@@ -24,6 +41,8 @@ export function createRedisCacheHandler(
   const maxTtl = options.maxTtl ?? DEFAULT_MAX_TTL;
   const client = createCacheClient(options.url);
   const pendingSets = new Map<string, Promise<void>>();
+  const manifest = createTagManifest();
+  let refreshing: Promise<void> | undefined;
 
   async function store(cacheKey: string, pendingEntry: Promise<CacheEntry>): Promise<void> {
     const entry = await pendingEntry;
@@ -48,18 +67,37 @@ export function createRedisCacheHandler(
     return readEntry(connected, entryKey(keyPrefix, cacheKey));
   }
 
+  async function read(cacheKey: string, softTags: string[]): Promise<ReadOutcome> {
+    await pendingSets.get(cacheKey);
+    if (manifest.serverNow() === undefined) return { kind: "miss", reason: "unavailable" };
+
+    try {
+      const stored = await load(cacheKey);
+      if (stored === undefined) return { kind: "miss", reason: "absent" };
+      if (stored.expire < 0) return { kind: "miss", reason: "expired" };
+
+      const verdict = manifest.verdictFor(stored.tags, softTags, stored.writeTime);
+      if (verdict === "expired") return { kind: "miss", reason: "expired" };
+
+      const stale = verdict === "stale" || isPastRevalidate(stored, Date.now());
+
+      return { kind: stale ? "stale" : "hit", entry: entryOf(stored, stale) };
+    } catch {
+      return { kind: "miss", reason: "unavailable" };
+    }
+  }
+
+  async function refresh(): Promise<void> {
+    const connected = await client.connected();
+
+    manifest.replaceWith(await readTagManifest(connected, keyPrefix));
+  }
+
   return {
-    async get(cacheKey: string): Promise<undefined | CacheEntry> {
-      await pendingSets.get(cacheKey);
+    async get(cacheKey: string, softTags: string[]): Promise<undefined | CacheEntry> {
+      const outcome = await read(cacheKey, softTags);
 
-      try {
-        const stored = await load(cacheKey);
-        if (stored === undefined || stored.expire < 0) return undefined;
-
-        return entryOf(stored);
-      } catch {
-        return undefined;
-      }
+      return outcome.kind === "miss" ? undefined : outcome.entry;
     },
     set(cacheKey: string, pendingEntry: Promise<CacheEntry>): Promise<void> {
       const inFlight = store(cacheKey, pendingEntry).catch(() => undefined);
@@ -70,18 +108,32 @@ export function createRedisCacheHandler(
       });
     },
     refreshTags(): Promise<void> {
-      return Promise.resolve();
+      refreshing ??= refresh()
+        .catch(() => undefined)
+        .finally(() => {
+          refreshing = undefined;
+        });
+
+      return refreshing;
     },
     getExpiration(): Promise<Timestamp> {
       return Promise.resolve(Infinity);
     },
-    updateTags(): Promise<void> {
-      return Promise.resolve();
+    async updateTags(tags: string[], durations?: { expire?: number }): Promise<void> {
+      if (tags.length === 0) return;
+
+      const connected = await client.connected();
+
+      await writeTagEvents(connected, keyPrefix, tags, durations, maxTtl);
     },
     close(): Promise<void> {
       return client.close();
     },
   };
+}
+
+function isPastRevalidate(stored: StoredEntry, appNow: Timestamp): boolean {
+  return appNow > stored.timestamp + stored.revalidate * 1000;
 }
 
 async function readStream(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
@@ -91,7 +143,7 @@ async function readStream(stream: ReadableStream<Uint8Array>): Promise<Uint8Arra
   return Buffer.concat(chunks);
 }
 
-function entryOf(stored: BufferedEntry): CacheEntry {
+function entryOf(stored: BufferedEntry, stale: boolean): CacheEntry {
   return {
     value: new ReadableStream<Uint8Array>({
       start(controller) {
@@ -103,6 +155,6 @@ function entryOf(stored: BufferedEntry): CacheEntry {
     stale: stored.stale,
     timestamp: stored.timestamp,
     expire: stored.expire,
-    revalidate: stored.revalidate,
+    revalidate: stale ? STALE_REVALIDATE : stored.revalidate,
   };
 }
