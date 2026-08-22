@@ -23,7 +23,9 @@
     "valkey"
   ],
   "sideEffects": [
-    "./dist/handler.js"
+    "./dist/handler.js",
+    "./dist/handler.node.js",
+    "./dist/handler.edge.js"
   ],
   "exports": {
     ".": {
@@ -32,7 +34,13 @@
     },
     "./handler": {
       "types": "./dist/handler.d.ts",
+      "edge-light": "./dist/handler.edge.js",
       "default": "./dist/handler.js"
+    },
+    "./handler-target": {
+      "types": "./dist/handler.node.d.ts",
+      "edge-light": "./dist/handler.edge.js",
+      "default": "./dist/handler.node.js"
     },
     "./package.json": "./package.json"
   },
