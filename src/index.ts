@@ -12,6 +12,7 @@ export type {
   CacheSkipReason,
 } from "./events.js";
 export { createRedisCacheHandler } from "./redis-cache-handler.js";
+export { optionsFromEnv } from "./env.js";
 
 /**
  * Absolute filesystem path of the Zero-config entry, resolved when this module is

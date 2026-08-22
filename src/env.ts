@@ -35,6 +35,14 @@ const BOOLEANS = new Map([
  * Every variable is parsed before the URL is looked at, so an unusable value is reported
  * on a host that has no `REDIS_URL` too, rather than lying dormant until the day one is
  * set.
+ *
+ * The Zero-config entry is the first caller, and an app is the other: no variable covers
+ * `onEvent`, `onError` or `client`, so an app that wants the environment's configuration
+ * plus hooks of its own spreads this over them —
+ * `createRedisCacheHandler({ ...optionsFromEnv(process.env), onEvent })` — and points
+ * `cacheHandlers` at its own module. Such a caller owns the `undefined` case: it means
+ * this environment configures no store, and it is for the app to decide whether that is a
+ * handler that caches nothing, as the Zero-config entry does, or a startup failure.
  */
 export function optionsFromEnv(env: NodeJS.ProcessEnv): RedisCacheHandlerOptions | undefined {
   const options = {
