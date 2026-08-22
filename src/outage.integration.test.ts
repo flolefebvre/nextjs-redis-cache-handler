@@ -42,6 +42,9 @@ const STALL_MS = 250;
 
 const RECOVERY_MS = 30_000;
 
+/** How long a cell waits for an error the connection raises on its own schedule. */
+const REPORT_MS = 10_000;
+
 const CONTAINER_TIMEOUT = 120_000;
 
 describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
@@ -326,7 +329,7 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
       expect(waitedMs).toBeLessThan(PROMPT_MS);
       expect(opsOf(recorded.errors)).toContain("get");
       expect(opsOf(recorded.errors)).toContain("set");
-      expect(opsOf(recorded.errors)).toContain("connect");
+      await expectReports(recorded.errors, "connect");
     },
   );
 
@@ -346,7 +349,7 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
       expect(lastMiss(recorded.events)).toBe("unavailable");
       expect(elapsed()).toBeLessThan(PROMPT_MS);
       expect(opsOf(recorded.errors)).toContain("refreshTags");
-      expect(opsOf(recorded.errors)).toContain("connect");
+      await expectReports(recorded.errors, "connect");
 
       await redis.start();
 
@@ -414,6 +417,17 @@ function expectGaveUp(
   expect(waitedMs).toBeGreaterThanOrEqual(RETRY_BUDGET - TIMEOUT);
   expect(waitedMs).toBeLessThan(RETRY_BUDGET + TIMEOUT + MARGIN);
   expect(reportedFor(errors, "updateTags")).toHaveLength(1);
+}
+
+/**
+ * Waits for one operation to be reported, for a hook an event fires rather than the call a
+ * test awaited: the report lands when the event does, which no instant of the test names.
+ */
+async function expectReports(errors: [unknown, CacheErrorOp][], op: CacheErrorOp): Promise<void> {
+  await vi.waitUntil(() => opsOf(errors).includes(op), {
+    timeout: REPORT_MS,
+    interval: SETTLE_MS,
+  });
 }
 
 /** What was reported for one operation, in order: how a test counts the calls of `onError`. */
