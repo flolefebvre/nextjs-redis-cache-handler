@@ -47,3 +47,29 @@ _Avoid_: invalidated, purged, deleted
 The record, per tag, of when it was last made stale and when it was last made expired. The shared copy lives in
 Redis; each instance keeps a local copy refreshed before every request.
 _Avoid_: tag index, tag registry
+
+### Test side
+
+**Instance**:
+One `next start` process serving one build. The e2e suite runs two Instances on one store so that propagation
+between them can be observed.
+_Avoid_: server, node, replica
+
+**Fixture app**:
+The Next.js app under `e2e/` whose routes and cached functions exercise the Cache Handler end to end.
+_Avoid_: example app, demo, sample
+
+**Scenario**:
+One sequential narrative of requests and revalidations across the two Instances, asserted on both the HTTP output
+and the Recorded calls. One scenario per e2e test file, each with its own fresh Instances.
+_Avoid_: test case, flow, journey
+
+**Recorded call**:
+One Cache Handler method invocation as logged by the Fixture app's recording wrapper: which Instance, which
+method, with what key and tags, and its outcome.
+_Avoid_: log line, trace, event
+
+**Oracle**:
+Next.js's built-in in-memory Cache Handler, used as the reference implementation in contract tests: the same
+Scenario runs against it and against this handler, and the observable results are compared.
+_Avoid_: reference handler, baseline, default handler (ambiguous with the `default` Handler slot)
