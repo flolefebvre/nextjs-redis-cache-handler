@@ -13,6 +13,8 @@ const BACKOFF_CAP = 80;
 
 const MARGIN = 120;
 
+const WRITTEN = "written";
+
 function budget(overrides: Partial<RetryBudget> = {}): RetryBudget {
   return {
     budgetMs: BUDGET,
@@ -27,8 +29,20 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** What every attempt of one call did, as the test that watches them reads it. */
+type Attempts = { at: number[]; mark: () => void; gaps: () => number[] };
+
+/** An attempt that always succeeds, recorded as it starts. */
+function succeeding(attempts: Attempts): () => Promise<string> {
+  return () => {
+    attempts.mark();
+
+    return Promise.resolve(WRITTEN);
+  };
+}
+
 /** When every attempt started, counted from the first one. */
-function starts(): { at: number[]; mark: () => void; gaps: () => number[] } {
+function starts(): Attempts {
   const at: number[] = [];
 
   return {
@@ -42,13 +56,9 @@ describe("withRetries", () => {
   test("gives back what the first attempt returned, having run it once", async () => {
     const attempts = starts();
 
-    const returned = await withRetries("updateTags", budget(), () => {
-      attempts.mark();
+    const returned = await withRetries("updateTags", budget(), succeeding(attempts));
 
-      return Promise.resolve("written");
-    });
-
-    expect(returned).toBe("written");
+    expect(returned).toBe(WRITTEN);
     expect(attempts.at).toHaveLength(1);
   });
 
@@ -58,10 +68,10 @@ describe("withRetries", () => {
     const returned = await withRetries("updateTags", budget(), () => {
       attempts.mark();
 
-      return attempts.at.length < 3 ? Promise.reject(new Error("no")) : Promise.resolve("written");
+      return attempts.at.length < 3 ? Promise.reject(new Error("no")) : Promise.resolve(WRITTEN);
     });
 
-    expect(returned).toBe("written");
+    expect(returned).toBe(WRITTEN);
     expect(attempts.at).toHaveLength(3);
   });
 
@@ -72,11 +82,35 @@ describe("withRetries", () => {
       attempts.mark();
       if (attempts.at.length < 2) throw new Error("thrown before any await");
 
-      return Promise.resolve("written");
+      return Promise.resolve(WRITTEN);
     });
 
-    expect(returned).toBe("written");
+    expect(returned).toBe(WRITTEN);
     expect(attempts.at).toHaveLength(2);
+  });
+
+  test("runs one attempt even on a budget too short to schedule anything in", async () => {
+    const attempts = starts();
+
+    const returned = await withRetries("updateTags", budget({ budgetMs: 1 }), succeeding(attempts));
+
+    expect(returned).toBe(WRITTEN);
+    expect(attempts.at).toHaveLength(1);
+  });
+
+  test("gives up on the first failure of a budget one attempt already outlasts", async () => {
+    const attempts = starts();
+    const failure = new Error("the store said no");
+
+    const retried = withRetries("updateTags", budget({ budgetMs: 1 }), () => {
+      attempts.mark();
+
+      return Promise.reject(failure);
+    });
+
+    await expect(retried).rejects.toBeInstanceOf(GaveUpError);
+    expect(attempts.at).toHaveLength(1);
+    await expect(retried).rejects.toHaveProperty("cause", failure);
   });
 
   test("gives up once the budget is spent, naming the operation and the budget", async () => {

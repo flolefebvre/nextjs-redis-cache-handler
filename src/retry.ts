@@ -35,7 +35,12 @@ export class GaveUpError extends Error {
  * `withDeadline` at the smaller of `attemptTimeoutMs` and what is left of the budget, and
  * every pause is cut short at the budget's end, so the caller waits `budgetMs` and no
  * more — a failure at the very edge of the budget is a `GaveUpError` rather than one more
- * attempt. The first attempt always runs.
+ * attempt. The first attempt always runs, whatever the budget: it is bounded by the
+ * budget itself rather than by what is left of it, so a budget already spent by the time
+ * the loop starts still sends one command.
+ *
+ * The budget is spent on the monotonic clock, so a host clock stepping backwards mid-retry
+ * does not extend it.
  *
  * Only an operation whose retry is safe belongs here: an attempt that failed may still
  * have landed, which the next one then repeats.
@@ -47,22 +52,26 @@ export async function withRetries<T>(
   budget: RetryBudget,
   attempt: () => Promise<T>,
 ): Promise<T> {
-  const endsAt = Date.now() + budget.budgetMs;
+  const endsAt = performance.now() + budget.budgetMs;
   let backoffMs = budget.backoffMs;
   let failure: unknown;
+  let attempted = false;
+  const gaveUp = (): GaveUpError => new GaveUpError(operation, budget.budgetMs, failure);
 
   for (;;) {
-    const left = endsAt - Date.now();
-    if (left <= 0) throw new GaveUpError(operation, budget.budgetMs, failure);
+    const left = endsAt - performance.now();
+    if (attempted && left <= 0) throw gaveUp();
 
+    const bound = attempted ? left : budget.budgetMs;
+    attempted = true;
     try {
-      return await withDeadline(Math.min(budget.attemptTimeoutMs, left), attempt);
+      return await withDeadline(Math.min(budget.attemptTimeoutMs, bound), attempt);
     } catch (error) {
       failure = error;
     }
 
-    const remaining = endsAt - Date.now();
-    if (remaining <= 0) throw new GaveUpError(operation, budget.budgetMs, failure);
+    const remaining = endsAt - performance.now();
+    if (remaining <= 0) throw gaveUp();
 
     await pause(Math.min(backoffMs, remaining));
     backoffMs = Math.min(backoffMs * 2, budget.backoffCapMs);
