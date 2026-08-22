@@ -32,4 +32,4 @@ if ((await handler.get("probe", [])) === undefined) {
   throw new Error("the probe Entry did not come back");
 }
 
-await handler.close();
+if (process.env.CACHE_PROBE_CLOSE !== "0") await handler.close();

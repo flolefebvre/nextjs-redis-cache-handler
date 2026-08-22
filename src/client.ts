@@ -9,6 +9,20 @@ const PING_INTERVAL = 10_000;
 const RECONNECT_CAP = 2_000;
 const RECONNECT_JITTER = 200;
 
+/**
+ * How long to wait before the next reconnection attempt: 50·2ⁿ ms, capped at 2 s, plus
+ * up to 200 ms of jitter so that every Instance of a deployment does not come back on
+ * the same millisecond.
+ *
+ * It is a delay for every attempt count, however large, and never `false` nor an
+ * `Error`: node-redis reads either of those as "give up", which closes the client for
+ * good and turns an outage into a handler that never works again. The doubling
+ * overflows to `Infinity` long before that matters, and the cap takes it from there.
+ */
+export function reconnectDelay(retries: number): number {
+  return Math.min(50 * 2 ** retries, RECONNECT_CAP) + Math.random() * RECONNECT_JITTER;
+}
+
 function createTunedClient(url: string) {
   return createClient({
     url,
@@ -17,8 +31,7 @@ function createTunedClient(url: string) {
     socket: {
       connectTimeout: CONNECT_TIMEOUT,
       socketTimeout: SOCKET_TIMEOUT,
-      reconnectStrategy: (retries: number) =>
-        Math.min(50 * 2 ** retries, RECONNECT_CAP) + Math.random() * RECONNECT_JITTER,
+      reconnectStrategy: reconnectDelay,
     },
   });
 }
