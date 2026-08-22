@@ -257,3 +257,29 @@ export async function seedTagEvents(
     tags.map((tag) => ({ score: staleAt, value: tag })),
   );
 }
+
+/**
+ * The Handler clock the store holds, or `undefined` while no stamp has been issued under
+ * this Key prefix yet.
+ */
+export async function handlerClock(
+  server: ServerClient,
+  keyPrefix: string,
+): Promise<number | undefined> {
+  const held = await server.get(`${keyPrefix}{tags}:clock`);
+
+  return held === null ? undefined : Number(held);
+}
+
+/**
+ * Put the Handler clock at an instant of the test's choosing. Seeding it ahead of the
+ * server's wall clock is what a backward step of that clock looks like from the handler's
+ * side, without a test ever moving the server's own clock.
+ */
+export async function seedHandlerClock(
+  server: ServerClient,
+  keyPrefix: string,
+  at: number,
+): Promise<void> {
+  await server.set(`${keyPrefix}{tags}:clock`, String(Math.floor(at)));
+}

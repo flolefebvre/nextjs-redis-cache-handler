@@ -11,7 +11,12 @@ import {
 import { resolveOptions, type RedisCacheHandlerOptions } from "./options.js";
 import { RETRY_BACKOFF, RETRY_BACKOFF_CAP, withRetries, type RetryBudget } from "./retry.js";
 import { createTagManifest } from "./tag-manifest.js";
-import { readTagManifest, readTagManifestSince, writeTagEvents } from "./tag-store.js";
+import {
+  readTagManifest,
+  readTagManifestSince,
+  tickHandlerClock,
+  writeTagEvents,
+} from "./tag-store.js";
 import type { CacheEntry, CacheHandler, Timestamp } from "./types.js";
 
 const STALE_REVALIDATE = -1;
@@ -125,12 +130,13 @@ export function createRedisCacheHandler(
 
     await withDeadline(operationTimeout, async () => {
       const connected = await client.connected();
+      const stamp = await tickHandlerClock(connected, keyPrefix);
 
       await writeEntry(
         connected,
         entryKey(keyPrefix, cacheKey),
         { ...entry, value },
-        age,
+        stamp - age,
         ttlSeconds,
       );
     });

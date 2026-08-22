@@ -55,7 +55,7 @@ test("updating no tag at all touches nothing on the server", async () => {
   expect(await server.keys(`${keyPrefix}*`)).toEqual([]);
 });
 
-test("a tag event leaves exactly the two Tag manifest keys under the Key prefix", async () => {
+test("a tag event leaves exactly the three keys of the tag slot under the Key prefix", async () => {
   const keyPrefix = freshPrefix();
   const handler = handlerFor(keyPrefix);
   const server = await serverClient();
@@ -64,10 +64,12 @@ test("a tag event leaves exactly the two Tag manifest keys under the Key prefix"
 
   expect((await server.keys(`${keyPrefix}*`)).sort()).toEqual([
     `${keyPrefix}{tags}`,
+    `${keyPrefix}{tags}:clock`,
     `${keyPrefix}{tags}:log`,
   ]);
   expect(await server.type(`${keyPrefix}{tags}`)).toBe("hash");
   expect(await server.type(`${keyPrefix}{tags}:log`)).toBe("zset");
+  expect(await server.type(`${keyPrefix}{tags}:clock`)).toBe("string");
 });
 
 test("concurrent refreshes of one handler object share a single read", async () => {

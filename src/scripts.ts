@@ -1,11 +1,46 @@
 import { createHash } from "node:crypto";
 
 import { WRITE_TIME_FIELD } from "./entry-hash.js";
+import { parseStamp } from "./handler-clock.js";
 import { parseTagRefresh, type TagRefresh } from "./tag-manifest.js";
+import type { Timestamp } from "./types.js";
 
-const SERVER_NOW = `
+const WALL_NOW = `
 local clock = redis.call('TIME')
-local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
+local wallNow = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
+local function handlerNow(key, step)
+  local last = tonumber(redis.call('GET', key)) or 0
+  return math.max(wallNow, last + step)
+end
+`;
+
+/**
+ * The Lua that issues one stamp of the Handler clock: the wall clock, floored by the last
+ * stamp the key holds, and never equal to it. The new stamp is persisted, so two stamps
+ * are never the same instant and a tag event issued after an Entry write always beats it,
+ * even while the wall clock sits behind the floor (ADR 0003).
+ */
+function stamp(clockKey: string): string {
+  return `${WALL_NOW}
+local now = handlerNow(${clockKey}, 1)
+redis.call('SET', ${clockKey}, string.format('%d', now))
+`;
+}
+
+/**
+ * The Lua that reads the Handler clock without issuing a stamp: the wall clock, floored
+ * by the last stamp. It persists nothing — a read runs on every request of every Instance
+ * and nothing needs its value to be strictly increasing, so making it a write would put
+ * one write per request into the replication stream and the AOF for good (ADR 0003).
+ */
+function readClock(clockKey: string): string {
+  return `${WALL_NOW}
+local now = handlerNow(${clockKey}, 0)
+`;
+}
+
+const TICK = `${stamp("KEYS[1]")}
+return string.format('%d', now)
 `;
 
 const EXPIRED_AT_OF = `
@@ -24,7 +59,7 @@ ${EXPIRED_AT_OF}
 local maxTtl = tonumber(ARGV[1])
 local mode = ARGV[2]
 local expireMs = tonumber(ARGV[3])
-${SERVER_NOW}
+${stamp("KEYS[3]")}
 for index = 4, #ARGV do
   local tag = ARGV[index]
   local expiredAt = now
@@ -54,7 +89,7 @@ return 1
 const HMGET_CHUNK = 1000;
 
 const READ_TAG_MANIFEST_SINCE = `
-${SERVER_NOW}
+${readClock("KEYS[3]")}
 if redis.call('ZCARD', KEYS[2]) < redis.call('HLEN', KEYS[1]) then return false end
 local tags = redis.call('ZRANGE', KEYS[2], ARGV[1], '+inf', 'BYSCORE')
 local fields = {}
@@ -72,16 +107,13 @@ return { string.format('%d', now), fields }
 `;
 
 const READ_TAG_MANIFEST = `
-${SERVER_NOW}
+${readClock("KEYS[2]")}
 return { string.format('%d', now), redis.call('HGETALL', KEYS[1]) }
 `;
 
 const WRITE_ENTRY = `
-local age = tonumber(ARGV[1])
+local writeTime = ARGV[1]
 local ttl = tonumber(ARGV[2])
-local clock = redis.call('TIME')
-local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
-local writeTime = string.format('%d', math.floor(now - age))
 redis.call('HSET', KEYS[1], '${WRITE_TIME_FIELD}', writeTime, unpack(ARGV, 3))
 redis.call('EXPIRE', KEYS[1], ttl)
 return 1
@@ -121,13 +153,28 @@ function defineCacheScript<Reply>(
 }
 
 /**
- * The write unit of one Entry: the hash fields and the key TTL, plus the Write time
- * the script alone computes.
+ * One stamp of the Handler clock, the single source of every instant this handler
+ * compares (ADR 0003): `max(TIME, last + 1)` in milliseconds, persisted and returned.
  *
- * It is a script rather than a `MULTI` because the Write time is `TIME - age` on the
- * Redis clock (ADR 0002) and a transaction cannot feed the reply of `TIME` into the
- * `HSET` that follows it. Every delay before the script runs therefore makes the Entry
- * look older, which is the safe side: an Entry is dropped, never wrongly served.
+ * It touches the clock key and nothing else, so it is routable on Cluster on its own,
+ * and it is the first of the two round trips a `set` makes: the Entry write that follows
+ * carries the Write time this stamp gives it.
+ *
+ * Keys: the Handler clock. No arguments.
+ */
+export const tickScript: CacheScript<Timestamp> = defineCacheScript(TICK, 1, parseStamp);
+
+/**
+ * The write unit of one Entry: the hash fields, the Write time the caller computed from
+ * a stamp of the Handler clock, and the key TTL.
+ *
+ * It stays a script rather than becoming a `MULTI` of the same two commands: it is one
+ * round trip either way, it keeps the `HSET` and the `EXPIRE` in one atomic unit, and it
+ * needs nothing of the client the transaction shape would ask for. It reads no clock of
+ * its own — the Handler clock lives in the `{tags}` slot, which an Entry's own slot
+ * cannot reach on Cluster — so the Write time is `stamp - age`, computed by the caller.
+ * Every delay between the stamp and this write therefore makes the Entry look older,
+ * which is the safe side: an Entry is dropped, never wrongly served (ADR 0002).
  *
  * The TTL is the caller's, already counted from the Write time and always at least one
  * second: no Entry outlives `min(expire, maxTtl)` counted from its Write time, which is
@@ -135,7 +182,7 @@ function defineCacheScript<Reply>(
  * (ADR 0002), so the arithmetic that takes it off the lifetime lives beside the decision
  * not to write an Entry that has none left, and not here.
  *
- * Arguments: the age in milliseconds, the TTL in seconds, then the hash fields.
+ * Arguments: the Write time in milliseconds, the TTL in seconds, then the hash fields.
  */
 export const writeEntryScript: CacheScript<void> = defineCacheScript(
   WRITE_ENTRY,
@@ -145,10 +192,10 @@ export const writeEntryScript: CacheScript<void> = defineCacheScript(
 
 /**
  * The one write of a tag event: per tag, the Tag manifest hash and the log, stamped with
- * the server clock the script alone reads, plus the pruning of events too old to affect
+ * the Handler clock the script alone issues, plus the pruning of events too old to affect
  * any living Entry.
  *
- * It is a script because a client timestamp or a `TIME` read in a separate round trip
+ * It is a script because a client timestamp or a stamp read in a separate round trip
  * both lose events under concurrency, and because the three `durations` forms need the
  * tag's current `expiredAt` to be read and rewritten without a race. A tag never made
  * Expired keeps `expiredAt` at `0`, which no Entry can ever be older than, so that a
@@ -165,31 +212,31 @@ export const writeEntryScript: CacheScript<void> = defineCacheScript(
  * tag event. The watermark read of a later version sees such a re-added member once per
  * `maxTtl` and overwrites its local state with the identical value.
  *
- * Keys: the Tag manifest hash and its log. Arguments: `maxTtl` in milliseconds, the
- * `durations` mode and its expiration, then the tags.
+ * Keys: the Tag manifest hash, its log and the Handler clock. Arguments: `maxTtl` in
+ * milliseconds, the `durations` mode and its expiration, then the tags.
  */
 export const updateTagsScript: CacheScript<void> = defineCacheScript(
   UPDATE_TAGS,
-  2,
+  3,
   (): void => undefined,
 );
 
 /**
- * The full read of the Tag manifest: the whole hash and the server clock it was read at,
- * in one round trip. `HGETALL` alone would leave the comparison in `get` without a Redis
- * clock to compare against, and reading `TIME` separately would be a second round trip
- * on a value that must match the manifest it is used with.
+ * The full read of the Tag manifest: the whole hash and the Handler clock it was read at,
+ * in one round trip. `HGETALL` alone would leave the comparison in `get` without a clock
+ * to compare against, and reading the clock separately would be a second round trip on a
+ * value that must match the manifest it is used with. The read issues no stamp (ADR 0003).
  *
- * Keys: the Tag manifest hash. No arguments.
+ * Keys: the Tag manifest hash and the Handler clock. No arguments.
  */
 export const readTagManifestScript: CacheScript<TagRefresh> = defineCacheScript(
   READ_TAG_MANIFEST,
-  1,
+  2,
   parseTagRefresh,
 );
 
 /**
- * The incremental read of the Tag manifest: the server clock, the log members written
+ * The incremental read of the Tag manifest: the Handler clock, the log members written
  * since the caller's watermark, and their manifest values, in one round trip. Its cost
  * is that of the events since the last read, whatever the size of the manifest, where a
  * full read grows with the manifest and stalls the server for every Instance.
@@ -206,11 +253,12 @@ export const readTagManifestScript: CacheScript<TagRefresh> = defineCacheScript(
  * script answers nothing at all in that case, so that the caller reads the manifest whole
  * instead of advancing its watermark past them.
  *
- * Keys: the Tag manifest hash and its log. Arguments: the log score to read from.
+ * Keys: the Tag manifest hash, its log and the Handler clock. Arguments: the log score to
+ * read from.
  */
 export const readTagManifestSinceScript: CacheScript<TagRefresh | undefined> = defineCacheScript(
   READ_TAG_MANIFEST_SINCE,
-  2,
+  3,
   (reply: unknown): TagRefresh | undefined =>
     reply === null || reply === undefined ? undefined : parseTagRefresh(reply),
 );
