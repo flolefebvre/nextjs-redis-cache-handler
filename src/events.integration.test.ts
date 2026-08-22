@@ -15,6 +15,24 @@ import type { RedisCacheHandlerOptions } from "./options.js";
 
 const MAX_EXPIRE = 31_536_000;
 
+/** A handler capped at `maxEntrySize` bytes, with a recorder and a client to observe it. */
+async function withEntryCap(maxEntrySize: number): Promise<{
+  keyPrefix: string;
+  handler: ReturnType<typeof handlerFor>;
+  recorded: ReturnType<typeof recording>;
+  server: Awaited<ReturnType<typeof serverClient>>;
+}> {
+  const keyPrefix = freshPrefix();
+  const recorded = recording();
+
+  return {
+    keyPrefix,
+    recorded,
+    handler: handlerFor(keyPrefix, { ...recorded.hooks, maxEntrySize }),
+    server: await serverClient(),
+  };
+}
+
 /**
  * A handler whose Tag manifest key holds a string, so that every manifest command it
  * runs fails on the server with a real error.
@@ -179,10 +197,7 @@ test("a write fires one set event with the key and a non-negative duration", asy
 });
 
 test("an Entry bigger than maxEntrySize is skipped, stored nowhere, and read back absent", async () => {
-  const keyPrefix = freshPrefix();
-  const recorded = recording();
-  const handler = handlerFor(keyPrefix, { ...recorded.hooks, maxEntrySize: 16 });
-  const server = await serverClient();
+  const { keyPrefix, handler, recorded, server } = await withEntryCap(16);
   await handler.refreshTags();
 
   await handler.set("big", Promise.resolve(entryOf({ value: streamOf(new Uint8Array(17)) })));
@@ -196,10 +211,7 @@ test("an Entry bigger than maxEntrySize is skipped, stored nowhere, and read bac
 });
 
 test("an Entry exactly at maxEntrySize is stored", async () => {
-  const keyPrefix = freshPrefix();
-  const recorded = recording();
-  const handler = handlerFor(keyPrefix, { ...recorded.hooks, maxEntrySize: 16 });
-  const server = await serverClient();
+  const { keyPrefix, handler, recorded, server } = await withEntryCap(16);
 
   await handler.set("edge", Promise.resolve(entryOf({ value: streamOf(new Uint8Array(16)) })));
 

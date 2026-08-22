@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { connect, createServer, type Socket } from "node:net";
+import { createClient } from "redis";
 import { expect, inject, onTestFinished, test, vi } from "vitest";
 
+import { opsOf, recording, serverClient } from "../tests/handler-harness.js";
+import { createCacheClient } from "./client.js";
 import { createRedisCacheHandler } from "./redis-cache-handler.js";
 
 const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP", "SIGUSR2"] as const;
@@ -92,4 +95,67 @@ test("the handler installs no process signal handler", async () => {
   await handler.close();
 
   expect(SIGNALS.map((signal) => process.listenerCount(signal))).toEqual(before);
+});
+
+test("an injected client round-trips an Entry, and is left open by close()", async () => {
+  const injected = await serverClient();
+  const handler = createRedisCacheHandler({ client: injected, keyPrefix: freshPrefix() });
+
+  await handler.set("injected", entry());
+  await handler.refreshTags();
+  const stored = await handler.get("injected", []);
+  await handler.close();
+
+  expect(stored).toBeDefined();
+  expect(await injected.ping()).toBe("PONG");
+});
+
+test("an injected client that is not connected is never connected by the handler", async () => {
+  const listener = await countingListener();
+  const injected = createClient({ url: listener.url });
+  const recorded = recording();
+  const handler = createRedisCacheHandler({
+    client: injected,
+    keyPrefix: freshPrefix(),
+    ...recorded.hooks,
+  });
+
+  await handler.refreshTags();
+  await handler.set("offline", entry());
+  const read = await handler.get("offline", []);
+  await expect(handler.updateTags(["posts"])).rejects.toThrowError();
+
+  expect(read).toBeUndefined();
+  expect(opsOf(recorded.errors)).toEqual(["refreshTags", "set", "updateTags"]);
+  expect(injected.isOpen).toBe(false);
+  expect(listener.connections()).toBe(0);
+  await handler.close();
+  expect(injected.isOpen).toBe(false);
+  expect(listener.connections()).toBe(0);
+});
+
+test("close() takes the handler's error listener off an injected client", async () => {
+  const injected = await serverClient();
+  const recorded = recording();
+  const handler = createRedisCacheHandler({
+    client: injected,
+    keyPrefix: freshPrefix(),
+    ...recorded.hooks,
+  });
+
+  injected.emit("error", new Error("while the handler is open"));
+  await handler.close();
+  injected.emit("error", new Error("after the handler closed"));
+
+  expect(opsOf(recorded.errors)).toEqual(["connect"]);
+});
+
+test("close() quits a client the handler created from a url", async () => {
+  const handle = createCacheClient({ url: inject("redisUrl") }, () => undefined);
+  const client = await handle.connected();
+  expect(await client.withTypeMapping({}).sendCommand(["PING"])).toBe("PONG");
+
+  await handle.close();
+
+  await expect(client.withTypeMapping({}).sendCommand(["PING"])).rejects.toThrowError();
 });
