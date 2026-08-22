@@ -9,9 +9,16 @@ import {
   serverClient,
   storeBefore,
   tick,
+  wait,
   timingsOf,
 } from "../tests/handler-harness.js";
 import type { CacheEntry } from "./types.js";
+
+const PRUNING_MAX_TTL_SECONDS = 3;
+
+const PAST_MAX_TTL_MS = 3_200;
+
+const PRUNING_TIMEOUT_MS = 60_000;
 
 test("a tag another Instance expired makes the Entry a miss on the next request", async () => {
   const { instanceA, instanceB } = instancePair();
@@ -215,42 +222,50 @@ test("durations without an expire on a never-touched tag make it Stale, never Ex
   expect((await readAfterRefresh(instanceB, "posts"))?.revalidate).toBe(-1);
 });
 
-test("pruning walks the log in batches and leaves the tags it cannot drop in place", async () => {
-  const keyPrefix = freshPrefix();
-  const handler = handlerFor(keyPrefix, { maxTtl: 1 });
-  const server = await serverClient();
-  const scheduled = Array.from({ length: 150 }, (_, index) => `scheduled:${String(index)}`);
+test(
+  "pruning walks the log in batches and leaves the tags it cannot drop in place",
+  { timeout: PRUNING_TIMEOUT_MS },
+  async () => {
+    const keyPrefix = freshPrefix();
+    const handler = handlerFor(keyPrefix, { maxTtl: PRUNING_MAX_TTL_SECONDS });
+    const server = await serverClient();
+    const scheduled = Array.from({ length: 150 }, (_, index) => `scheduled:${String(index)}`);
 
-  await handler.updateTags(scheduled, { expire: 31536000 });
-  await tick();
-  await handler.updateTags(["ancient"]);
-  await new Promise((resolve) => setTimeout(resolve, 1_200));
-  await handler.updateTags(["recent"]);
+    await handler.updateTags(scheduled, { expire: 31536000 });
+    await tick();
+    await handler.updateTags(["ancient"]);
+    await wait(PAST_MAX_TTL_MS);
+    await handler.updateTags(["recent"]);
 
-  expect(await server.hKeys(`${keyPrefix}{tags}`)).toContain("ancient");
+    expect(await server.hKeys(`${keyPrefix}{tags}`)).toContain("ancient");
 
-  await handler.updateTags(["recent"]);
-  await handler.updateTags(["recent"]);
-  const tags = await server.hKeys(`${keyPrefix}{tags}`);
-  const logged = await server.zRange(`${keyPrefix}{tags}:log`, 0, -1);
+    await handler.updateTags(["recent"]);
+    await handler.updateTags(["recent"]);
+    const tags = await server.hKeys(`${keyPrefix}{tags}`);
+    const logged = await server.zRange(`${keyPrefix}{tags}:log`, 0, -1);
 
-  expect(tags).not.toContain("ancient");
-  expect(logged).not.toContain("ancient");
-  expect(tags).toEqual(expect.arrayContaining(scheduled));
-  expect(logged).toEqual(expect.arrayContaining(scheduled));
-});
+    expect(tags).not.toContain("ancient");
+    expect(logged).not.toContain("ancient");
+    expect(tags).toEqual(expect.arrayContaining(scheduled));
+    expect(logged).toEqual(expect.arrayContaining(scheduled));
+  },
+);
 
-test("a tag event too old to affect any living Entry is pruned by a later one", async () => {
-  const keyPrefix = freshPrefix();
-  const handler = handlerFor(keyPrefix, { maxTtl: 1 });
-  const server = await serverClient();
+test(
+  "a tag event too old to affect any living Entry is pruned by a later one",
+  { timeout: PRUNING_TIMEOUT_MS },
+  async () => {
+    const keyPrefix = freshPrefix();
+    const handler = handlerFor(keyPrefix, { maxTtl: PRUNING_MAX_TTL_SECONDS });
+    const server = await serverClient();
 
-  await handler.updateTags(["ancient"]);
-  await handler.updateTags(["scheduled"], { expire: 31536000 });
-  await new Promise((resolve) => setTimeout(resolve, 1_200));
-  await handler.updateTags(["recent"]);
+    await handler.updateTags(["ancient"]);
+    await handler.updateTags(["scheduled"], { expire: 31536000 });
+    await wait(PAST_MAX_TTL_MS);
+    await handler.updateTags(["recent"]);
 
-  expect((await server.hKeys(`${keyPrefix}{tags}`)).sort()).toEqual(["recent", "scheduled"]);
-  expect(await server.zScore(`${keyPrefix}{tags}:log`, "ancient")).toBeNull();
-  expect(await server.zScore(`${keyPrefix}{tags}:log`, "scheduled")).not.toBeNull();
-});
+    expect((await server.hKeys(`${keyPrefix}{tags}`)).sort()).toEqual(["recent", "scheduled"]);
+    expect(await server.zScore(`${keyPrefix}{tags}:log`, "ancient")).toBeNull();
+    expect(await server.zScore(`${keyPrefix}{tags}:log`, "scheduled")).not.toBeNull();
+  },
+);
