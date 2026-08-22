@@ -1,7 +1,6 @@
-import { createClient } from "redis";
+import { createClient, type RedisArgument, type TypeMapping } from "redis";
 
 import type { CacheErrorHook } from "./events.js";
-import { readTagManifestScript, updateTagsScript, writeEntryScript } from "./scripts.js";
 
 const CONNECT_TIMEOUT = 2_000;
 const SOCKET_TIMEOUT = 30_000;
@@ -12,11 +11,6 @@ const RECONNECT_JITTER = 200;
 function createTunedClient(url: string) {
   return createClient({
     url,
-    scripts: {
-      writeEntryHash: writeEntryScript,
-      updateTagManifest: updateTagsScript,
-      readTagManifest: readTagManifestScript,
-    },
     disableOfflineQueue: true,
     pingInterval: PING_INTERVAL,
     socket: {
@@ -28,8 +22,40 @@ function createTunedClient(url: string) {
   });
 }
 
-/** The connected client every operation of one handler object runs on. */
-export type CacheClient = ReturnType<typeof createTunedClient>;
+/**
+ * The commands one operation runs, on a client view with a chosen type mapping: the raw
+ * command channel the Lua scripts go through, and the one typed command the handler
+ * reads an Entry with.
+ *
+ * `hGetAll` is typed rather than sent as a raw command because a raw reply is not
+ * normalised across RESP versions — a flat array on RESP2, a map on RESP3 — while a Lua
+ * script's reply is, Redis converting it to RESP2 shapes unless the script asks for
+ * otherwise, which none of these do.
+ */
+export interface CacheCommands {
+  /** Send one command, argument by argument, exactly as given. */
+  sendCommand(args: readonly RedisArgument[]): Promise<unknown>;
+  /**
+   * Every field of one hash. The values are `unknown` because this view's type mapping
+   * decides what they are at runtime and the mapping is not carried in this type: the
+   * one caller passes bytes and reads bytes back.
+   */
+  hGetAll(key: RedisArgument): Promise<Record<string, unknown>>;
+}
+
+/**
+ * The client every operation of one handler object runs on: what the handler uses of a
+ * node-redis client, and nothing more.
+ *
+ * It is this narrow structurally, rather than node-redis's `RedisClientType`, so that a
+ * client the caller injected satisfies it whatever its generic parameters. A client
+ * created with custom scripts, or with `RESP: 2`, is not assignable to `RedisClientType`
+ * at all, and this library has no reason to know about either.
+ */
+export interface CacheClient {
+  /** This client, seen through the given type mapping. */
+  withTypeMapping(typeMapping: TypeMapping): CacheCommands;
+}
 
 /** A client the handler owns: connected on first use, quit on `close()`. */
 export interface CacheClientHandle {

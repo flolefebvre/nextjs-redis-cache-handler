@@ -45,8 +45,8 @@ export function encodeEntryFields(entry: BufferedEntry): (string | Buffer)[] {
  * unreadable — a hash written by another version of this library is a miss, never a
  * throw.
  */
-export function decodeEntryHash(hash: Record<string, Buffer | undefined>): StoredEntry | undefined {
-  const value = hash[VALUE_FIELD];
+export function decodeEntryHash(hash: Record<string, unknown>): StoredEntry | undefined {
+  const value = decodeBytes(hash[VALUE_FIELD]);
   const tags = decodeTags(hash[TAGS_FIELD]);
   const stale = decodeNumber(hash[STALE_FIELD]);
   const timestamp = decodeNumber(hash[TIMESTAMP_FIELD]);
@@ -61,20 +61,32 @@ export function decodeEntryHash(hash: Record<string, Buffer | undefined>): Store
   return { value, tags, stale, timestamp, expire, revalidate, writeTime };
 }
 
-function decodeNumber(field: Buffer | undefined): number | undefined {
-  if (field === undefined || field.length === 0) return undefined;
+function decodeBytes(field: unknown): Buffer | undefined {
+  return Buffer.isBuffer(field) ? field : undefined;
+}
 
-  const parsed = Number(field.toString());
+function decodeText(field: unknown): string | undefined {
+  if (typeof field === "string") return field;
+
+  return decodeBytes(field)?.toString();
+}
+
+function decodeNumber(field: unknown): number | undefined {
+  const text = decodeText(field);
+  if (text === undefined || text.length === 0) return undefined;
+
+  const parsed = Number(text);
 
   return Number.isNaN(parsed) ? undefined : parsed;
 }
 
-function decodeTags(field: Buffer | undefined): string[] | undefined {
-  if (field === undefined) return undefined;
+function decodeTags(field: unknown): string[] | undefined {
+  const text = decodeText(field);
+  if (text === undefined) return undefined;
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(field.toString());
+    parsed = JSON.parse(text);
   } catch {
     return undefined;
   }

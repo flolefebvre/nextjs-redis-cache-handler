@@ -1,7 +1,7 @@
-import { defineScript, type CommandParser, type RedisArgument } from "redis";
+import { createHash } from "node:crypto";
 
 import { WRITE_TIME_FIELD } from "./entry-hash.js";
-import { parseTagRefresh, type TagDurations, type TagRefresh } from "./tag-manifest.js";
+import { parseTagRefresh, type TagRefresh } from "./tag-manifest.js";
 
 const SERVER_NOW = `
 local clock = redis.call('TIME')
@@ -68,41 +68,37 @@ return 1
 `;
 
 /**
- * The shape node-redis gives a defined script, spelled out because the package does
- * not export the type `defineScript` returns.
+ * One Lua script this handler runs, with the digest `EVALSHA` needs and the parsing of
+ * its reply.
+ *
+ * The scripts are not bound to the client with node-redis's `scripts` option: a client
+ * the caller injected was created without them, and node-redis 6 offers no way to add
+ * scripts to a client it did not create. They are run by `runScript` instead, over
+ * `sendCommand`, which every client has whatever its own scripts, RESP version or socket.
  */
-export interface WriteEntryScript {
+export interface CacheScript<Reply> {
+  /** The Lua source, sent by `EVAL` when the server does not know the digest yet. */
   SCRIPT: string;
+  /** How many of the arguments that follow are keys, as `EVAL` counts them. */
   NUMBER_OF_KEYS: number;
-  IS_READ_ONLY: boolean;
+  /** The digest of `SCRIPT`, as `EVALSHA` names it. */
   SHA1: string;
-  parseCommand(
-    this: void,
-    parser: CommandParser,
-    key: RedisArgument,
-    age: number,
-    ttlSeconds: number,
-    fields: readonly RedisArgument[],
-  ): void;
-  transformReply(this: void): void;
+  /** What the script's reply means, or a throw when the server answered something else. */
+  transformReply(this: void, reply: unknown): Reply;
 }
 
-const writeEntryConfig: Omit<WriteEntryScript, "SHA1"> = {
-  SCRIPT: WRITE_ENTRY,
-  NUMBER_OF_KEYS: 1,
-  IS_READ_ONLY: false,
-  parseCommand(
-    parser: CommandParser,
-    key: RedisArgument,
-    age: number,
-    ttlSeconds: number,
-    fields: readonly RedisArgument[],
-  ) {
-    parser.pushKey(key);
-    parser.push(String(age), String(ttlSeconds), ...fields);
-  },
-  transformReply: (): void => undefined,
-};
+function defineCacheScript<Reply>(
+  script: string,
+  numberOfKeys: number,
+  transformReply: (this: void, reply: unknown) => Reply,
+): CacheScript<Reply> {
+  return {
+    SCRIPT: script,
+    NUMBER_OF_KEYS: numberOfKeys,
+    SHA1: createHash("sha1").update(script).digest("hex"),
+    transformReply,
+  };
+}
 
 /**
  * The write unit of one Entry: the hash fields and the key TTL, plus the Write time
@@ -112,44 +108,14 @@ const writeEntryConfig: Omit<WriteEntryScript, "SHA1"> = {
  * Redis clock (ADR 0002) and a transaction cannot feed the reply of `TIME` into the
  * `HSET` that follows it. Every delay before the script runs therefore makes the Entry
  * look older, which is the safe side: an Entry is dropped, never wrongly served.
+ *
+ * Arguments: the age in milliseconds, the TTL in seconds, then the hash fields.
  */
-export const writeEntryScript: WriteEntryScript = defineScript(writeEntryConfig);
-
-/** The shape node-redis gives the tag write script. */
-export interface UpdateTagsScript {
-  SCRIPT: string;
-  NUMBER_OF_KEYS: number;
-  IS_READ_ONLY: boolean;
-  SHA1: string;
-  parseCommand(
-    this: void,
-    parser: CommandParser,
-    manifestKey: RedisArgument,
-    logKey: RedisArgument,
-    maxTtlMs: number,
-    durations: TagDurations,
-    tags: readonly string[],
-  ): void;
-  transformReply(this: void): void;
-}
-
-const updateTagsConfig: Omit<UpdateTagsScript, "SHA1"> = {
-  SCRIPT: UPDATE_TAGS,
-  NUMBER_OF_KEYS: 2,
-  IS_READ_ONLY: false,
-  parseCommand(
-    parser: CommandParser,
-    manifestKey: RedisArgument,
-    logKey: RedisArgument,
-    maxTtlMs: number,
-    durations: TagDurations,
-    tags: readonly string[],
-  ) {
-    parser.pushKeys([manifestKey, logKey]);
-    parser.push(String(maxTtlMs), durations.mode, String(durations.expireMs), ...tags);
-  },
-  transformReply: (): void => undefined,
-};
+export const writeEntryScript: CacheScript<void> = defineCacheScript(
+  WRITE_ENTRY,
+  1,
+  (): void => undefined,
+);
 
 /**
  * The one write of a tag event: per tag, the Tag manifest hash and the log, stamped with
@@ -169,33 +135,26 @@ const updateTagsConfig: Omit<UpdateTagsScript, "SHA1"> = {
  * expiration would sit at the front of the log forever and be re-read on every single
  * tag event. The watermark read of a later version sees such a re-added member once per
  * `maxTtl` and overwrites its local state with the identical value.
+ *
+ * Keys: the Tag manifest hash and its log. Arguments: `maxTtl` in milliseconds, the
+ * `durations` mode and its expiration, then the tags.
  */
-export const updateTagsScript: UpdateTagsScript = defineScript(updateTagsConfig);
-
-/** The shape node-redis gives the manifest read script. */
-export interface ReadTagManifestScript {
-  SCRIPT: string;
-  NUMBER_OF_KEYS: number;
-  IS_READ_ONLY: boolean;
-  SHA1: string;
-  parseCommand(this: void, parser: CommandParser, manifestKey: RedisArgument): void;
-  transformReply(this: void, reply: unknown): TagRefresh;
-}
-
-const readTagManifestConfig: Omit<ReadTagManifestScript, "SHA1"> = {
-  SCRIPT: READ_TAG_MANIFEST,
-  NUMBER_OF_KEYS: 1,
-  IS_READ_ONLY: true,
-  parseCommand(parser: CommandParser, manifestKey: RedisArgument) {
-    parser.pushKey(manifestKey);
-  },
-  transformReply: (reply: unknown): TagRefresh => parseTagRefresh(reply),
-};
+export const updateTagsScript: CacheScript<void> = defineCacheScript(
+  UPDATE_TAGS,
+  2,
+  (): void => undefined,
+);
 
 /**
  * The full read of the Tag manifest: the whole hash and the server clock it was read at,
  * in one round trip. `HGETALL` alone would leave the comparison in `get` without a Redis
  * clock to compare against, and reading `TIME` separately would be a second round trip
  * on a value that must match the manifest it is used with.
+ *
+ * Keys: the Tag manifest hash. No arguments.
  */
-export const readTagManifestScript: ReadTagManifestScript = defineScript(readTagManifestConfig);
+export const readTagManifestScript: CacheScript<TagRefresh> = defineCacheScript(
+  READ_TAG_MANIFEST,
+  1,
+  parseTagRefresh,
+);
