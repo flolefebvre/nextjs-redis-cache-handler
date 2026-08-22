@@ -6,6 +6,7 @@ import {
   freshPrefix,
   opsOf,
   recording,
+  serverClient,
   tick,
   VALUE,
   wait,
@@ -16,15 +17,19 @@ import {
   testImage,
   type OutageRedis,
 } from "../tests/redis-container.js";
-import type { CacheEvent } from "./events.js";
+import type { CacheErrorOp, CacheEvent } from "./events.js";
 import type { RedisCacheHandlerOptions } from "./options.js";
 import { createRedisCacheHandler } from "./redis-cache-handler.js";
+import { tagKeys } from "./tag-store.js";
+import type { CacheHandler } from "./types.js";
 
 const TIMEOUT = 200;
 
 const MARGIN = 800;
 
 const PATIENT_TIMEOUT = 10_000;
+
+const RETRY_BUDGET = 1_000;
 
 const PROMPT_MS = 500;
 
@@ -93,6 +98,19 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
     return { outcome, waitedMs };
   }
 
+  /** How an invalidation issued against a stalled server settled, once it answers again. */
+  async function invalidatedWhileStalled(other: CacheHandler): Promise<"resolved" | "rejected"> {
+    const { outcome } = await whileStalled(async () => {
+      const invalidating = other.updateTags(["posts"]);
+      await wait(SETTLE_MS);
+      await redis.unpause();
+
+      return settling(invalidating);
+    });
+
+    return outcome;
+  }
+
   async function whileDown(): Promise<void> {
     await redis.stop();
     onTestFinished(() => redis.start());
@@ -133,16 +151,76 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
   );
 
   test(
-    "an invalidation of a stalled server gives up within the deadline, and throws",
+    "an invalidation of a stalled server retries for its whole budget, then throws once",
     { timeout: CONTAINER_TIMEOUT },
     async () => {
-      const { instance, recorded } = await ready(freshPrefix());
+      const { instance, recorded } = await ready(freshPrefix(), {
+        updateTagsTimeout: RETRY_BUDGET,
+      });
 
       const { outcome, waitedMs } = await whileStalled(() => settling(instance.updateTags(["a"])));
 
-      expect(outcome).toBe("rejected");
-      expect(waitedMs).toBeLessThan(TIMEOUT + MARGIN);
-      expect(opsOf(recorded.errors)).toContain("updateTags");
+      expectGaveUp(outcome, waitedMs, recorded.errors);
+      expect(String(reportedFor(recorded.errors, "updateTags").at(0))).toContain("updateTags");
+    },
+  );
+
+  test(
+    "an invalidation of a server that is down retries for its budget rather than at once",
+    { timeout: CONTAINER_TIMEOUT },
+    async () => {
+      const { instance, recorded } = await ready(freshPrefix(), {
+        updateTagsTimeout: RETRY_BUDGET,
+      });
+
+      await whileDown();
+      const startedAt = Date.now();
+      const outcome = await settling(instance.updateTags(["a"]));
+      const waitedMs = Date.now() - startedAt;
+
+      expectGaveUp(outcome, waitedMs, recorded.errors);
+    },
+  );
+
+  test(
+    "an invalidation of a stalled server that answers within the budget lands once",
+    { timeout: CONTAINER_TIMEOUT },
+    async () => {
+      const keyPrefix = freshPrefix();
+      const { instance } = await ready(keyPrefix);
+      const other = handler(keyPrefix, {
+        operationTimeout: TIMEOUT,
+        updateTagsTimeout: RETRY_BUDGET,
+      });
+      await instance.set(
+        "invalidated-within-budget",
+        Promise.resolve(entryOf({ tags: ["posts"] })),
+      );
+      await tick();
+      expect(await instance.get("invalidated-within-budget", [])).toBeDefined();
+
+      const outcome = await invalidatedWhileStalled(other);
+      await instance.refreshTags();
+
+      expect(outcome).toBe("resolved");
+      expect(await instance.get("invalidated-within-budget", [])).toBeUndefined();
+      const observer = await serverClient(redis.url);
+      expect(await observer.zCard(tagKeys(keyPrefix).log)).toBe(1);
+    },
+  );
+
+  test(
+    "an invalidation with no tag is not a round trip, whatever the server is doing",
+    { timeout: CONTAINER_TIMEOUT },
+    async () => {
+      const { instance, recorded } = await ready(freshPrefix(), {
+        updateTagsTimeout: RETRY_BUDGET,
+      });
+
+      const { waitedMs } = await whileStalled(() => settling(instance.updateTags([])));
+
+      expect(waitedMs).toBeLessThan(PROMPT_MS);
+      expect(opsOf(recorded.errors)).not.toContain("updateTags");
     },
   );
 
@@ -193,13 +271,7 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
       await tick();
       expect(await instance.get("invalidated-late", [])).toBeDefined();
 
-      const { outcome } = await whileStalled(async () => {
-        const invalidating = other.updateTags(["posts"]);
-        await wait(SETTLE_MS);
-        await redis.unpause();
-
-        return settling(invalidating);
-      });
+      const outcome = await invalidatedWhileStalled(other);
       await instance.refreshTags();
 
       expect(outcome).toBe("resolved");
@@ -321,6 +393,26 @@ function settling(operation: Promise<unknown>): Promise<"resolved" | "rejected">
     () => "resolved" as const,
     () => "rejected" as const,
   );
+}
+
+/**
+ * What an invalidation that never reached the server comes to: one rejection, at the end
+ * of the budget rather than at the end of one attempt, reported exactly once.
+ */
+function expectGaveUp(
+  outcome: "resolved" | "rejected",
+  waitedMs: number,
+  errors: [unknown, CacheErrorOp][],
+): void {
+  expect(outcome).toBe("rejected");
+  expect(waitedMs).toBeGreaterThanOrEqual(RETRY_BUDGET - TIMEOUT);
+  expect(waitedMs).toBeLessThan(RETRY_BUDGET + TIMEOUT + MARGIN);
+  expect(reportedFor(errors, "updateTags")).toHaveLength(1);
+}
+
+/** What was reported for one operation, in order: how a test counts the calls of `onError`. */
+function reportedFor(errors: [unknown, CacheErrorOp][], op: CacheErrorOp): unknown[] {
+  return errors.filter(([, reported]) => reported === op).map(([error]) => error);
 }
 
 function lastMiss(events: CacheEvent[]): string | undefined {

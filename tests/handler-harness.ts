@@ -74,9 +74,12 @@ export function instancePair(): {
 /** What `serverClient()` hands back, for the helpers that take one. */
 export type ServerClient = Awaited<ReturnType<typeof serverClient>>;
 
-/** A plain client on the same server, to observe what the handler wrote. */
-export async function serverClient() {
-  const client = createClient({ url: inject("redisUrl") });
+/**
+ * A plain client on the shared server of the run, or on the one whose URL is given, to
+ * observe what the handler wrote. A test that owns a server of its own hands over its URL.
+ */
+export async function serverClient(url: string = inject("redisUrl")) {
+  const client = createClient({ url });
   client.on("error", () => undefined);
   await client.connect();
   onTestFinished(() => client.close());
