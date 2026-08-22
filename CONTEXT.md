@@ -41,6 +41,17 @@ The state of an Entry or tag that must not be served; the next read is a miss an
 `updateTag(tag)` and `revalidateTag(tag, { expire: 0 })` make a tag expired.
 _Avoid_: invalidated, purged, deleted
 
+**Prerendered route**:
+A route whose whole output was produced at build time and is served from the ISR cache without consulting the
+Cache Handler; its Entries are read again only when that copy is regenerated.
+_Avoid_: static route, static page
+
+**ISR cache**:
+The per-instance store of prerendered output, owned by the singular `cacheHandler`, not by this library. A
+revalidation only reaches the ISR cache of the instance that ran it; other instances catch up when their copy's
+`revalidate` window elapses.
+_Avoid_: page cache, static cache, incremental cache
+
 ### Handler side
 
 **Tag manifest**:
