@@ -34,13 +34,16 @@ type ReadOutcome =
  *
  * Neither `get` nor `set` ever rejects: a read that fails is a miss and a write that
  * fails is dropped. Next.js awaits pending writes after a Server Action, so a rejected
- * `set` would fail the user's action over a cache blip. An Entry the wrapper would read
- * as expired, or one whose value is larger than `maxEntrySize`, is not written at all
- * and is reported as a `skip`. `refreshTags` never rejects
+ * `set` would fail the user's action over a cache blip. `refreshTags` never rejects
  * either — a rejection would fail every cache read of the request — but until one full
  * read of the Tag manifest has succeeded in this process every `get` is a miss: a miss
  * is slow, serving an Entry a mutation has already dropped is wrong. `updateTags` does
  * reject, so that a lost invalidation fails the Server Action visibly.
+ *
+ * Every outcome of a `get` and of a `set` is reported to `onEvent`, and every failure to
+ * `onError` with the operation it happened in. An Entry the wrapper would read as expired
+ * on every read, or one whose value is larger than `maxEntrySize`, is not written at all
+ * and is reported as a `skip`.
  */
 export function createRedisCacheHandler(
   options: RedisCacheHandlerOptions,
