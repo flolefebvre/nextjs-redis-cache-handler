@@ -5,6 +5,7 @@ import {
   freshPrefix,
   handlerFor,
   instancePair,
+  moveHandlerClockOn,
   readAfterRefresh,
   serverClient,
   seedTagEvents,
@@ -20,6 +21,18 @@ const PRUNED_MAX_TTL_SECONDS = 1;
 const PRUNED_AGE_MS = 60_000;
 
 const A_YEAR_MS = 31_536_000_000;
+
+/**
+ * How far the Handler clock is moved on past a tag event before the Entry that follows it
+ * is written, which is what `tick()` cannot do: an Entry is stamped `stamp - age`, so this
+ * margin has to exceed the render length `RENDER_MS` for the Write time to land after the
+ * event, and while the clock is held at its floor by a backward step of the host's wall
+ * clock no wait moves it at all (ADR 0003).
+ */
+const EVENT_MARGIN_MS = 500;
+
+/** How long the render of an Entry took, shorter than the margin the clock moved on by. */
+const RENDER_MS = 100;
 
 test("a tag another Instance expired makes the Entry a miss on the next request", async () => {
   const { instanceA, instanceB } = instancePair();
@@ -83,10 +96,11 @@ test("concurrent refreshes of one handler object share a single read", async () 
 });
 
 test("an Entry written after the tag event is served", async () => {
-  const { instanceA, instanceB } = instancePair();
-
+  const { keyPrefix, instanceA, instanceB } = instancePair();
+  const server = await serverClient();
   await instanceA.updateTags(["posts"]);
-  await tick();
+  await moveHandlerClockOn(server, keyPrefix, EVENT_MARGIN_MS);
+
   await instanceA.set("posts", Promise.resolve(entryOf({ tags: ["posts"] })));
   await instanceB.refreshTags();
 
@@ -184,13 +198,15 @@ test("an Entry whose render was running when the tag event landed is dropped", a
 });
 
 test("an Entry whose render started after the tag event is served, however long it took", async () => {
-  const { instanceA, instanceB } = instancePair();
+  const { keyPrefix, instanceA, instanceB } = instancePair();
+  const server = await serverClient();
+  await instanceA.updateTags(["slow"]);
+  await moveHandlerClockOn(server, keyPrefix, EVENT_MARGIN_MS);
 
-  await instanceA.updateTags(["posts"]);
-  await tick();
-  const started = Date.now();
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  await instanceA.set("slow", Promise.resolve(entryOf({ tags: ["posts"], timestamp: started })));
+  await instanceA.set(
+    "slow",
+    Promise.resolve(entryOf({ tags: ["slow"], timestamp: Date.now() - RENDER_MS })),
+  );
   await instanceB.refreshTags();
 
   expect(await instanceB.get("slow", [])).toBeDefined();

@@ -17,11 +17,11 @@ Two stamps can then share an instant, so the ordering is closed in the compariso
 the very millisecond of a Write time counts as later than it, `staleAt >= writeTime` and `expiredAt >=
 writeTime`. The tie drops the Entry, which is the side ADR 0002 already chooses — an Entry is dropped, never
 wrongly served — and it is the only cost of the freeze, along with an Entry generated after a tag event being
-dropped one extra time while the clock stands still. The Instance's own projection of the clock never gives back
-time it has counted either: a frozen clock would otherwise come back identical from every refresh and the
-projection would stand still with it, holding past its due date an expiration a `durations` had scheduled. It
-keeps the later of the refresh and what it had counted on its monotonic clock, which leaves it at most one step
-ahead of the shared clock — ahead only ever drops an Entry sooner.
+dropped for as long as the clock stands still, bounded by the size of the step. The Instance's own projection of
+the clock never gives back time it has counted either: a frozen clock would otherwise come back identical from
+every refresh and the projection would stand still with it, holding past its due date an expiration a
+`durations` had scheduled. It keeps the later of the refresh and what it had counted on its monotonic clock,
+which leaves it at most one step ahead of the shared clock — ahead only ever drops an Entry sooner.
 
 `set` costs two round trips: a `tick` on the clock key, then the Entry write with `writeTime = stamp − age`
 computed by the Instance and passed in. `get` still costs one and issues no stamp, and `set` is off the
