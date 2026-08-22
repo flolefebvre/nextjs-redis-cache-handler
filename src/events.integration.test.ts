@@ -15,6 +15,9 @@ import type { RedisCacheHandlerOptions } from "./options.js";
 
 const MAX_EXPIRE = 31_536_000;
 
+/** A retry budget short enough that a write which can only fail is not waited out. */
+const RETRY_BUDGET = 200;
+
 /** A handler capped at `maxEntrySize` bytes, with a recorder and a client to observe it. */
 async function withEntryCap(maxEntrySize: number): Promise<{
   keyPrefix: string;
@@ -165,7 +168,7 @@ test("with no error hook, one failure reaches console.error once", async () => {
 
 test("a tag write that fails reports the failure as updateTags, and still rejects", async () => {
   const recorded = recording();
-  const handler = await withBrokenManifest(recorded.hooks);
+  const handler = await withBrokenManifest({ ...recorded.hooks, updateTagsTimeout: RETRY_BUDGET });
 
   await expect(handler.updateTags(["posts"])).rejects.toThrow();
 

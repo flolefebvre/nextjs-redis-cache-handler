@@ -38,7 +38,10 @@ export interface RedisCacheHandlerOptions {
   operationTimeout?: number;
   /**
    * The total budget, in milliseconds, `updateTags` retries within before it throws. A
-   * lost invalidation would leave every Instance serving output the mutation replaced.
+   * lost invalidation would leave every Instance serving output the mutation replaced,
+   * so the attempts are spread over this budget with an exponential backoff, each one
+   * bounded by `operationTimeout` or by what is left of the budget, whichever is
+   * smaller. Past it the call rejects, having reported once through `onError`.
    */
   updateTagsTimeout?: number;
   /**
@@ -55,9 +58,10 @@ export interface RedisCacheHandlerOptions {
   /** Called once per `get` and per `set` outcome. Exceptions are caught and ignored. */
   onEvent?: CacheEventHook;
   /**
-   * Called once per failure, with the operation it happened in. Defaults to
-   * `console.error` when neither this hook nor `debug` is given. Exceptions are caught
-   * and ignored.
+   * Called once per failure, with the operation it happened in. A failing `updateTags`
+   * calls it once, on the failure its retries ended with, never once per attempt.
+   * Defaults to `console.error` when neither this hook nor `debug` is given. Exceptions
+   * are caught and ignored.
    */
   onError?: CacheErrorHook;
   /**
