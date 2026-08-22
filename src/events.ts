@@ -4,8 +4,12 @@ const NO_PHASE = "no-phase";
 /** Why a read served nothing: the reason carried by a `miss` event. */
 export type CacheMissReason = "absent" | "expired" | "timeout" | "unavailable";
 
-/** Why a write stored nothing: the reason carried by a `skip` event. */
-export type CacheSkipReason = "too-large" | "expire-zero";
+/**
+ * Why a write stored nothing: the reason carried by a `skip` event. `expire-zero` is an
+ * Entry Next.js already hands over expired, `too-old` one whose age has consumed the
+ * whole lifetime `min(expire, maxTtl)` gives it, counted from its Write time.
+ */
+export type CacheSkipReason = "too-large" | "expire-zero" | "too-old";
 
 /**
  * One outcome of a `get` or a `set`, as `onEvent` receives it: discriminated on `type`,

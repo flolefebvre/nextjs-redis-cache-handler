@@ -129,6 +129,12 @@ function defineCacheScript<Reply>(
  * `HSET` that follows it. Every delay before the script runs therefore makes the Entry
  * look older, which is the safe side: an Entry is dropped, never wrongly served.
  *
+ * The TTL is the caller's, already counted from the Write time and always at least one
+ * second: no Entry outlives `min(expire, maxTtl)` counted from its Write time, which is
+ * what lets the tag events older than `maxTtl` be pruned. The age is the app's number
+ * (ADR 0002), so the arithmetic that takes it off the lifetime lives beside the decision
+ * not to write an Entry that has none left, and not here.
+ *
  * Arguments: the age in milliseconds, the TTL in seconds, then the hash fields.
  */
 export const writeEntryScript: CacheScript<void> = defineCacheScript(
@@ -148,7 +154,10 @@ export const writeEntryScript: CacheScript<void> = defineCacheScript(
  * Expired keeps `expiredAt` at `0`, which no Entry can ever be older than, so that a
  * profile without an `expire` marks the tag Stale and nothing more.
  *
- * Pruning walks at most one batch of the oldest log members per call, and re-adds at the
+ * Pruning drops the events older than `maxTtl`, on the invariant the write script keeps:
+ * no Entry outlives `min(expire, maxTtl)` counted from its Write time, so no living Entry
+ * has a Write time older than the cutoff and no dropped event can still be the verdict on
+ * one. Pruning walks at most one batch of the oldest log members per call, and re-adds at the
  * current time every member it examined but could not drop. A log score therefore means
  * "when the tag was last written, or last examined for pruning", never more than one
  * `maxTtl` behind the tag's own event: without the re-add, tags with a far-future

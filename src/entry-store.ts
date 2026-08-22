@@ -20,14 +20,27 @@ export function entryKey(keyPrefix: string, cacheKey: string): string {
 }
 
 /**
- * How long the Entry key lives: its `expire`, capped by `maxTtl`. Next.js says "never"
- * either as `Infinity` or as the sentinel it normalises `Infinity` to, and both always
- * clamp, whatever `maxTtl` is.
+ * How long the Entry key lives, counted from the Write time: its `expire`, capped by
+ * `maxTtl`, minus the age the Entry already carries. Next.js says "never" either as
+ * `Infinity` or as the sentinel it normalises `Infinity` to, and both always clamp to
+ * `maxTtl`, whatever it is — the age comes off that cap too.
+ *
+ * The age is rounded up to the second so that the key is never the short rounding of a
+ * second too long-lived: the prune rules of the Tag manifest compare in milliseconds
+ * against `maxTtl` counted from the Write time, and a key outliving that window is an
+ * Entry those rules have already dropped the tag events of.
+ *
+ * A result of zero or less means the Entry has already lived its whole lifetime and must
+ * not be written at all: `EXPIRE` takes no such value, and a key given the one second it
+ * would be raised to would outlive the invariant by that second.
  */
-export function entryTtlSeconds(expire: number, maxTtl: number): number {
-  if (!Number.isFinite(expire) || expire >= NEVER_EXPIRES) return maxTtl;
+export function entryTtlSeconds(expire: number, maxTtl: number, age: number): number {
+  const lifetime =
+    !Number.isFinite(expire) || expire >= NEVER_EXPIRES
+      ? maxTtl
+      : Math.min(Math.floor(expire), maxTtl);
 
-  return Math.min(Math.floor(expire), maxTtl);
+  return lifetime - Math.ceil(age / 1000);
 }
 
 /**
