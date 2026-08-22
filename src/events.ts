@@ -38,7 +38,12 @@ export type CacheErrorOp =
 /** What `onEvent` is: called once per `get` and per `set` outcome. Exceptions are ignored. */
 export type CacheEventHook = (event: CacheEvent) => void;
 
-/** What `onError` is: called once per failure, with the operation. Exceptions are ignored. */
+/**
+ * What `onError` is: called once per failure, with the operation. Exceptions are ignored.
+ *
+ * `updateTags` retries within its budget and reports once, on the failure it ends with,
+ * so the attempts it made before that one are not reported.
+ */
 export type CacheErrorHook = (error: unknown, op: CacheErrorOp) => void;
 
 /** The hook options of one handler object, as the reporter composes them. */

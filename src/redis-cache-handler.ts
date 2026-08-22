@@ -9,6 +9,7 @@ import {
   type CacheSkipReason,
 } from "./events.js";
 import { resolveOptions, type RedisCacheHandlerOptions } from "./options.js";
+import { RETRY_BACKOFF, RETRY_BACKOFF_CAP, withRetries, type RetryBudget } from "./retry.js";
 import { createTagManifest } from "./tag-manifest.js";
 import { readTagManifest, readTagManifestSince, writeTagEvents } from "./tag-store.js";
 import type { CacheEntry, CacheHandler, Timestamp } from "./types.js";
@@ -45,6 +46,14 @@ type ReadOutcome =
  * is slow, serving an Entry a mutation has already dropped is wrong. `updateTags` does
  * reject, so that a lost invalidation fails the Server Action visibly.
  *
+ * `updateTags` is also the one method that retries: it writes its tag events again, with
+ * an exponential backoff, until one attempt succeeds or `updateTagsTimeout` is spent, and
+ * only then throws. A retry is safe because the write overwrites what the attempt before
+ * it may have landed. Each attempt is bounded by `operationTimeout` or by what is left of
+ * the budget, whichever is smaller, so the caller waits the budget and no more, and
+ * `onError` is called exactly once for the whole call, on the failure it ends with — not
+ * once per attempt. A call with no tag is not a round trip at all.
+ *
  * `operationTimeout` bounds every one of them, the wait on the connection included, so
  * that a store that stopped answering makes the app slower and never blocks it. A `get`
  * that ran out of time is a miss `timeout` and one that failed for any other reason,
@@ -77,7 +86,13 @@ export function createRedisCacheHandler(
   options: RedisCacheHandlerOptions,
 ): CacheHandler & { close(): Promise<void> } {
   const resolved = resolveOptions(options);
-  const { keyPrefix, maxTtl, maxEntrySize, operationTimeout } = resolved;
+  const { keyPrefix, maxTtl, maxEntrySize, operationTimeout, updateTagsTimeout } = resolved;
+  const tagRetries: RetryBudget = {
+    budgetMs: updateTagsTimeout,
+    attemptTimeoutMs: operationTimeout,
+    backoffMs: RETRY_BACKOFF,
+    backoffCapMs: RETRY_BACKOFF_CAP,
+  };
   const reporter = createReporter(resolved);
   const client = createCacheClient(resolved.connection, reporter.fail);
   const pendingSets = new Map<string, Promise<void>>();
@@ -208,7 +223,7 @@ export function createRedisCacheHandler(
       if (tags.length === 0) return;
 
       try {
-        await withDeadline(operationTimeout, async () => {
+        await withRetries("updateTags", tagRetries, async () => {
           const connected = await client.connected();
 
           await writeTagEvents(connected, keyPrefix, tags, durations, maxTtl);

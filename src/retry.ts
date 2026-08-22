@@ -1,10 +1,10 @@
 import { withDeadline } from "./deadline.js";
 
-/** The first pause between two attempts, in milliseconds. */
-export const DEFAULT_BACKOFF = 50;
+/** The first pause between two attempts, in milliseconds: what a retried operation starts from. */
+export const RETRY_BACKOFF = 50;
 
 /** The longest pause between two attempts, in milliseconds, however many have failed. */
-export const DEFAULT_BACKOFF_CAP = 500;
+export const RETRY_BACKOFF_CAP = 500;
 
 /**
  * How long an operation may keep trying, and how it paces its attempts: the total budget,
