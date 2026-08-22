@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createClient } from "redis";
 import { inject, onTestFinished } from "vitest";
 
+import type { RedisCacheHandlerOptions } from "../src/options.js";
 import { createRedisCacheHandler } from "../src/redis-cache-handler.js";
 import type { CacheEntry, CacheHandler } from "../src/types.js";
 
@@ -13,12 +14,12 @@ export function freshPrefix(): string {
   return `cache-test:${randomUUID()}:`;
 }
 
-/** One Instance's handler object, closed when the test ends. */
+/** One Instance's handler object on the given Key prefix, closed when the test ends. */
 export function handlerFor(
   keyPrefix: string,
-  maxTtl?: number,
+  overrides: Partial<RedisCacheHandlerOptions> = {},
 ): ReturnType<typeof createRedisCacheHandler> {
-  const handler = createRedisCacheHandler({ url: inject("redisUrl"), keyPrefix, maxTtl });
+  const handler = createRedisCacheHandler({ url: inject("redisUrl"), keyPrefix, ...overrides });
   onTestFinished(() => handler.close());
 
   return handler;
