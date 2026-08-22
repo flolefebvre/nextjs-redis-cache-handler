@@ -2,6 +2,7 @@ import handler from "@flefebvre/nextjs-redis-cache-handler/handler";
 import { createClient } from "redis";
 import {
   createRedisCacheHandler,
+  optionsFromEnv,
   type CacheClient,
   handlerPath,
   type CacheEntry,
@@ -55,6 +56,8 @@ const options: RedisCacheHandlerOptions = {
 
 const injected: CacheClient = createClient({ url: "redis://localhost:6379" });
 
+const fromEnvironment: RedisCacheHandlerOptions | undefined = optionsFromEnv(process.env);
+
 const withInjectedClient: RedisCacheHandlerOptions = {
   client: injected,
   keyPrefix: "app:",
@@ -69,6 +72,7 @@ export function consume(): void {
 
   void injecting;
 
+  void fromEnvironment;
   void path;
   void zeroConfig;
   void writtenAt;

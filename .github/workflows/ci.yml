@@ -65,3 +65,6 @@ jobs:
 
       - name: Typecheck the built output
         run: pnpm typecheck:dist
+
+      - name: Smoke the built output
+        run: pnpm smoke:dist

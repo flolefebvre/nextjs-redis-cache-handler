@@ -1,4 +1,5 @@
-const LOG_PREFIX = "[nextjs-redis-cache-handler]";
+/** What every line this library logs starts with, so its output can be told apart. */
+export const LOG_PREFIX = "[nextjs-redis-cache-handler]";
 const NO_PHASE = "no-phase";
 
 /** Why a read served nothing: the reason carried by a `miss` event. */
