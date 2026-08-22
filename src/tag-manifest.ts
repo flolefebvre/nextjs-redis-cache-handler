@@ -22,7 +22,7 @@ export interface TagState {
 
 /** What one refresh of the Tag manifest brings back: the Handler clock and the tags to apply. */
 export interface TagRefresh {
-  serverNow: Timestamp;
+  handlerNow: Timestamp;
   states: Map<string, TagState>;
 }
 
@@ -45,9 +45,9 @@ export interface TagDurations {
 export function parseTagRefresh(reply: unknown): TagRefresh {
   if (!Array.isArray(reply) || reply.length !== 2) throw new Error(BAD_REPLY);
 
-  const serverNow = Number(reply[0]);
+  const handlerNow = Number(reply[0]);
   const fields: unknown = reply[1];
-  if (!Number.isFinite(serverNow)) throw new Error(BAD_REPLY);
+  if (!Number.isFinite(handlerNow)) throw new Error(BAD_REPLY);
   if (!Array.isArray(fields) || fields.length % 2 !== 0) throw new Error(BAD_REPLY);
 
   const states = new Map<string, TagState>();
@@ -56,7 +56,7 @@ export function parseTagRefresh(reply: unknown): TagRefresh {
     if (state !== undefined) states.set(String(fields[index]), state);
   }
 
-  return { serverNow, states };
+  return { handlerNow, states };
 }
 
 function parseTagState(value: string): TagState | undefined {
@@ -86,7 +86,7 @@ export function encodeTagDurations(durations: { expire?: number } | undefined): 
 }
 
 /**
- * What the manifest says about an Entry written at `writeTime`, as of `serverNow` — both
+ * What the manifest says about an Entry written at `writeTime`, as of `handlerNow` — both
  * on the Handler clock (ADR 0002, ADR 0003), never the app clock.
  *
  * A tag expired since the Entry was written drops it; a tag made Stale since then has it
@@ -98,7 +98,7 @@ export function tagVerdict(
   tags: readonly string[],
   softTags: readonly string[],
   writeTime: Timestamp,
-  serverNow: Timestamp,
+  handlerNow: Timestamp,
 ): TagVerdict {
   let stale = false;
 
@@ -106,7 +106,7 @@ export function tagVerdict(
     const state = states.get(tag);
     if (state === undefined) continue;
 
-    if (state.expiredAt <= serverNow && state.expiredAt > writeTime) return "expired";
+    if (state.expiredAt <= handlerNow && state.expiredAt > writeTime) return "expired";
     if (state.staleAt > writeTime) stale = true;
   }
 
@@ -141,8 +141,8 @@ export interface TagManifest {
    * process. It is the last refresh's instant plus the time elapsed since, measured on a
    * monotonic clock so that a step of the app's clock cannot move it.
    */
-  serverNow(): Timestamp | undefined;
-  /** What the local copy says about an Entry; the caller has checked `serverNow` first. */
+  handlerNow(): Timestamp | undefined;
+  /** What the local copy says about an Entry; the caller has checked `handlerNow` first. */
   verdictFor(
     tags: readonly string[],
     softTags: readonly string[],
@@ -156,18 +156,18 @@ export interface TagManifest {
  */
 export function createTagManifest(maxTtlMs: number): TagManifest {
   let states = new Map<string, TagState>();
-  let anchor: { serverNow: Timestamp; elapsedFrom: number } | undefined;
+  let anchor: { handlerNow: Timestamp; elapsedFrom: number } | undefined;
   let watermark: Timestamp | undefined;
 
-  function serverNow(): Timestamp | undefined {
+  function handlerNow(): Timestamp | undefined {
     if (anchor === undefined) return undefined;
 
-    return anchor.serverNow + (performance.now() - anchor.elapsedFrom);
+    return anchor.handlerNow + (performance.now() - anchor.elapsedFrom);
   }
 
   function anchorOn(refresh: TagRefresh): void {
-    anchor = { serverNow: refresh.serverNow, elapsedFrom: performance.now() };
-    watermark = refresh.serverNow;
+    anchor = { handlerNow: refresh.handlerNow, elapsedFrom: performance.now() };
+    watermark = refresh.handlerNow;
   }
 
   return {
@@ -176,10 +176,10 @@ export function createTagManifest(maxTtlMs: number): TagManifest {
       anchorOn(refresh);
     },
     mergeWith(refresh: TagRefresh): boolean {
-      if (watermark === undefined || refresh.serverNow < watermark) return false;
+      if (watermark === undefined || refresh.handlerNow < watermark) return false;
 
       for (const [tag, state] of refresh.states) states.set(tag, state);
-      prune(states, refresh.serverNow - maxTtlMs);
+      prune(states, refresh.handlerNow - maxTtlMs);
       anchorOn(refresh);
 
       return true;
@@ -187,13 +187,13 @@ export function createTagManifest(maxTtlMs: number): TagManifest {
     since(): Timestamp | undefined {
       return watermark === undefined ? undefined : watermark - WATERMARK_MARGIN;
     },
-    serverNow,
+    handlerNow,
     verdictFor(
       tags: readonly string[],
       softTags: readonly string[],
       writeTime: Timestamp,
     ): TagVerdict {
-      return tagVerdict(states, tags, softTags, writeTime, serverNow() ?? 0);
+      return tagVerdict(states, tags, softTags, writeTime, handlerNow() ?? 0);
     },
   };
 }

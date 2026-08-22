@@ -171,7 +171,7 @@ export function createRedisCacheHandler(
 
   async function read(cacheKey: string, softTags: string[]): Promise<ReadOutcome> {
     await pendingSets.get(cacheKey);
-    if (manifest.serverNow() === undefined) return { kind: "miss", reason: "unavailable" };
+    if (manifest.handlerNow() === undefined) return { kind: "miss", reason: "unavailable" };
 
     try {
       return await withDeadline(operationTimeout, () => served(cacheKey, softTags));

@@ -160,7 +160,7 @@ test("an outer Entry carrying an inner scope's tag misses when that inner tag is
   expect(await instanceB.get("outer", [])).toBeUndefined();
 });
 
-test("an Entry claiming a generation start in the future is stamped no later than the server clock", async () => {
+test("an Entry claiming a generation start in the future is stamped no later than the Handler clock", async () => {
   const { instanceA, instanceB } = instancePair();
   const ahead = entryOf({ tags: ["posts"], timestamp: Date.now() + 5_000 });
 

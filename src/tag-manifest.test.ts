@@ -18,7 +18,7 @@ function states(entries: Record<string, TagState>): Map<string, TagState> {
 test("a manifest value is the two instants the tag was last made Stale and Expired", () => {
   const refresh = parseTagRefresh(["10", ["posts", "10:20", "post:1", "30:30"]]);
 
-  expect(refresh.serverNow).toBe(10);
+  expect(refresh.handlerNow).toBe(10);
   expect(refresh.states).toEqual(
     states({ posts: { staleAt: 10, expiredAt: 20 }, "post:1": { staleAt: 30, expiredAt: 30 } }),
   );
@@ -33,7 +33,7 @@ test("a manifest value that is not two numbers is dropped, the rest is kept", ()
 });
 
 test("an empty manifest reads as an empty local copy", () => {
-  expect(parseTagRefresh(["1", []])).toEqual({ serverNow: 1, states: new Map() });
+  expect(parseTagRefresh(["1", []])).toEqual({ handlerNow: 1, states: new Map() });
 });
 
 test("a reply that is not a manifest is not decoded into an empty manifest", () => {
@@ -141,18 +141,18 @@ test("a Soft tag is compared exactly like an Explicit one", () => {
 test("a local copy answers nothing until a refresh has landed", () => {
   const manifest = createTagManifest(MAX_TTL_MS);
 
-  expect(manifest.serverNow()).toBeUndefined();
+  expect(manifest.handlerNow()).toBeUndefined();
 });
 
 test("a refresh replaces the local copy wholesale", () => {
   const manifest = createTagManifest(MAX_TTL_MS);
 
   manifest.replaceWith({
-    serverNow: NOW,
+    handlerNow: NOW,
     states: states({ posts: { staleAt: NOW, expiredAt: NOW } }),
   });
   manifest.replaceWith({
-    serverNow: NOW + 5,
+    handlerNow: NOW + 5,
     states: states({ other: { staleAt: 1, expiredAt: 2 } }),
   });
 
@@ -160,13 +160,13 @@ test("a refresh replaces the local copy wholesale", () => {
   expect(manifest.verdictFor(["other"], [], 1)).toBe("expired");
 });
 
-test("the server clock the local copy answers on moves forward from the last refresh", () => {
+test("the Handler clock the local copy answers on moves forward from the last refresh", () => {
   const manifest = createTagManifest(MAX_TTL_MS);
 
-  manifest.replaceWith({ serverNow: NOW, states: states({}) });
+  manifest.replaceWith({ handlerNow: NOW, states: states({}) });
 
-  expect(manifest.serverNow()).toBeGreaterThanOrEqual(NOW);
-  expect(manifest.serverNow()).toBeLessThan(NOW + 60_000);
+  expect(manifest.handlerNow()).toBeGreaterThanOrEqual(NOW);
+  expect(manifest.handlerNow()).toBeLessThan(NOW + 60_000);
 });
 
 test("a local copy no refresh has landed in has no watermark to read from", () => {
@@ -174,15 +174,18 @@ test("a local copy no refresh has landed in has no watermark to read from", () =
 
   expect(manifest.since()).toBeUndefined();
   expect(
-    manifest.mergeWith({ serverNow: NOW, states: states({ posts: { staleAt: 1, expiredAt: 2 } }) }),
+    manifest.mergeWith({
+      handlerNow: NOW,
+      states: states({ posts: { staleAt: 1, expiredAt: 2 } }),
+    }),
   ).toBe(false);
-  expect(manifest.serverNow()).toBeUndefined();
+  expect(manifest.handlerNow()).toBeUndefined();
 });
 
 test("the next watermark read starts a second before the last refresh", () => {
   const manifest = createTagManifest(MAX_TTL_MS);
 
-  manifest.replaceWith({ serverNow: NOW, states: states({}) });
+  manifest.replaceWith({ handlerNow: NOW, states: states({}) });
 
   expect(manifest.since()).toBe(NOW - 1000);
 });
@@ -191,14 +194,14 @@ test("a merge overwrites the tags it brings back and leaves the others alone", (
   const manifest = createTagManifest(MAX_TTL_MS);
 
   manifest.replaceWith({
-    serverNow: NOW,
+    handlerNow: NOW,
     states: states({
       posts: { staleAt: NOW, expiredAt: 0 },
       other: { staleAt: NOW, expiredAt: 0 },
     }),
   });
   const merged = manifest.mergeWith({
-    serverNow: NOW + 5,
+    handlerNow: NOW + 5,
     states: states({ posts: { staleAt: NOW + 5, expiredAt: NOW + 5 } }),
   });
 
@@ -212,11 +215,11 @@ test("a refresh whose clock is behind the watermark is refused and changes nothi
   const manifest = createTagManifest(MAX_TTL_MS);
 
   manifest.replaceWith({
-    serverNow: NOW,
+    handlerNow: NOW,
     states: states({ posts: { staleAt: NOW, expiredAt: NOW } }),
   });
   const merged = manifest.mergeWith({
-    serverNow: NOW - 1,
+    handlerNow: NOW - 1,
     states: states({ posts: { staleAt: 1, expiredAt: 1 } }),
   });
 
@@ -229,13 +232,13 @@ test("a merge drops the tags no living Entry can be affected by any more", () =>
   const manifest = createTagManifest(MAX_TTL_MS);
 
   manifest.replaceWith({
-    serverNow: NOW,
+    handlerNow: NOW,
     states: states({
       old: { staleAt: NOW - MAX_TTL_MS - 1, expiredAt: NOW - MAX_TTL_MS - 1 },
       never: { staleAt: NOW - MAX_TTL_MS - 1, expiredAt: 0 },
     }),
   });
-  manifest.mergeWith({ serverNow: NOW, states: states({}) });
+  manifest.mergeWith({ handlerNow: NOW, states: states({}) });
 
   expect(manifest.verdictFor(["old"], [], NOW - MAX_TTL_MS - 2)).toBe("fresh");
   expect(manifest.verdictFor(["never"], [], NOW - MAX_TTL_MS - 2)).toBe("fresh");
@@ -245,19 +248,19 @@ test("a merge keeps a tag whose expiration has not fallen behind maxTtl yet", ()
   const manifest = createTagManifest(MAX_TTL_MS);
 
   manifest.replaceWith({
-    serverNow: NOW,
+    handlerNow: NOW,
     states: states({ posts: { staleAt: NOW - MAX_TTL_MS - 1, expiredAt: NOW } }),
   });
-  manifest.mergeWith({ serverNow: NOW, states: states({}) });
+  manifest.mergeWith({ handlerNow: NOW, states: states({}) });
 
   expect(manifest.verdictFor(["posts"], [], NOW - MAX_TTL_MS - 2)).toBe("expired");
 });
 
-test("the server clock the local copy answers on moves on with a merge too", () => {
+test("the Handler clock the local copy answers on moves on with a merge too", () => {
   const manifest = createTagManifest(MAX_TTL_MS);
 
-  manifest.replaceWith({ serverNow: NOW, states: states({}) });
-  manifest.mergeWith({ serverNow: NOW + 60_000, states: states({}) });
+  manifest.replaceWith({ handlerNow: NOW, states: states({}) });
+  manifest.mergeWith({ handlerNow: NOW + 60_000, states: states({}) });
 
-  expect(manifest.serverNow()).toBeGreaterThanOrEqual(NOW + 60_000);
+  expect(manifest.handlerNow()).toBeGreaterThanOrEqual(NOW + 60_000);
 });
