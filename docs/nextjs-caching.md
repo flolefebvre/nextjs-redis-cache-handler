@@ -413,6 +413,27 @@ it in the root-params joiner path (`:405-411`, `:2063-2077`).
 - `cacheMaxMemorySize` is not passed to custom handlers; it only sizes the
   built-in LRU and the `IncrementalCache` memory tier.
 
+## Process lifecycle around the handler
+
+**[source]** `packages/next/src/build/index.ts:2191`,
+`packages/next/src/server/lib/start-server.ts:399-464`,
+`packages/next/src/cli/next-build.ts:38-45` (read at the `v16.3.2` tag of the
+repository; line numbers are the TypeScript source, not `dist/`).
+
+- `next build` sets `process.env.NEXT_PHASE = 'phase-production-build'`
+  immediately before forking its static-generation workers, so every worker
+  that imports the handler inherits it; Next.js's own test suites use exactly
+  this sentinel. Neither `next start` nor `next dev` sets `NEXT_PHASE`; they
+  differ by `NODE_ENV` (`production` / `development`).
+- On `SIGINT`/`SIGTERM`, `next start` (unless `NEXT_MANUAL_SIG_HANDLE` is
+  set) stops accepting connections, drains in-flight requests, awaits
+  `nextServer.close()`, then calls `process.exit(130 / 143)`. The handler is
+  never notified and nothing on the `CacheHandler` interface is called: the
+  Redis socket simply drops. Handler calls keep working during the drain.
+  `next build` exits the same way on a signal. The handler therefore needs no
+  shutdown hook for correctness; every write being one atomic unit is what
+  makes an abrupt exit safe.
+
 ## Measured: entry sizes and call order
 
 From the fixture prototype **[measured]**: a list page over a cached

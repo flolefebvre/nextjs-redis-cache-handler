@@ -48,6 +48,16 @@ The record, per tag, of when it was last made stale and when it was last made ex
 Redis; each instance keeps a local copy refreshed before every request.
 _Avoid_: tag index, tag registry
 
+**Key prefix**:
+The Redis key namespace under which one app's Entries and Tag manifest live. All instances of one app share it;
+two apps never do. The only isolation mechanism between apps on one Redis.
+_Avoid_: namespace, database
+
+**Zero-config entry**:
+The ready-made handler module, configured from environment variables, that wraps the factory for apps that
+need no custom options.
+_Avoid_: default handler (that is Next.js's built-in one), preset
+
 ### Test side
 
 **Instance**:
