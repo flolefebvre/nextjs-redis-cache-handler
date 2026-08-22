@@ -2,17 +2,43 @@ import { expect, onTestFinished, test } from "vitest";
 
 import {
   commandStream,
+  entryOf,
   freshPrefix,
   handlerFor,
   instancePair,
   serverClient,
   storeBefore,
   tagCommandNames,
+  tick,
   wait,
 } from "../tests/handler-harness.js";
+import { DEFAULT_OPERATION_TIMEOUT } from "./options.js";
 import { createRedisCacheHandler } from "./redis-cache-handler.js";
 
 const MAX_TTL_SECONDS = 1;
+
+const RACES = 50;
+
+const SEEDED_TAGS = 100_000;
+
+const SEED_BATCH = 5_000;
+
+const SEEDED_AGE_MS = 60_000;
+
+const SEEDED_TIMEOUT_MS = 60_000;
+
+const COST_RATIO = 5;
+
+const SEED = `
+local clock = redis.call('TIME')
+local score = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000) - ${SEEDED_AGE_MS}
+local value = string.format('%d', score) .. ':' .. string.format('%d', score)
+for index = 1, #ARGV do
+  redis.call('HSET', KEYS[1], ARGV[index], value)
+  redis.call('ZADD', KEYS[2], score, ARGV[index])
+end
+return 1
+`;
 
 const PAST_MAX_TTL_MS = 1_200;
 
@@ -103,3 +129,69 @@ test("a handler whose client reconnected reads the whole manifest and sees what 
   expect(await handler.get("posts", [])).toBeUndefined();
   expect(tagCommandNames(await stream.settled(), keyPrefix)).toContain("HGETALL");
 });
+
+test("two Instances writing on the same millisecond are both seen by a third", async () => {
+  const keyPrefix = freshPrefix();
+  const [writerA, writerB, reader] = [
+    handlerFor(keyPrefix),
+    handlerFor(keyPrefix),
+    handlerFor(keyPrefix),
+  ];
+  const rounds = Array.from({ length: RACES }, (_, round) => [`a:${round}`, `b:${round}`] as const);
+  await Promise.all(
+    rounds.flat().map((tag) => reader.set(tag, Promise.resolve(entryOf({ tags: [tag] })))),
+  );
+  await tick();
+  await reader.refreshTags();
+
+  const served: string[] = [];
+  for (const [tagA, tagB] of rounds) {
+    await Promise.all([writerA.updateTags([tagA]), writerB.updateTags([tagB])]);
+    await reader.refreshTags();
+    for (const tag of [tagA, tagB]) {
+      if ((await reader.get(tag, [])) !== undefined) served.push(tag);
+    }
+  }
+
+  expect(served).toEqual([]);
+});
+
+test(
+  "with a manifest of a hundred thousand tags, a watermark refresh costs a fraction of a full one",
+  { timeout: SEEDED_TIMEOUT_MS },
+  async () => {
+    const keyPrefix = freshPrefix();
+    const server = await serverClient();
+    await seedManifest(server, keyPrefix, SEEDED_TAGS);
+    const handler = handlerFor(keyPrefix);
+    await handler.updateTags(["warm-up"]);
+
+    const fullMs = await timed(() => handler.refreshTags());
+    const hGetAllMs = await timed(() => server.hGetAll(`${keyPrefix}{tags}`));
+    const watermarkMs = await timed(() => handler.refreshTags());
+
+    expect(watermarkMs).toBeLessThan(DEFAULT_OPERATION_TIMEOUT);
+    expect(watermarkMs * COST_RATIO).toBeLessThan(Math.min(fullMs, hGetAllMs));
+  },
+);
+
+async function seedManifest(
+  server: Awaited<ReturnType<typeof serverClient>>,
+  keyPrefix: string,
+  tags: number,
+): Promise<void> {
+  for (let first = 0; first < tags; first += SEED_BATCH) {
+    const batch = Array.from({ length: SEED_BATCH }, (_, index) => `seeded:${first + index}`);
+    await server.eval(SEED, {
+      keys: [`${keyPrefix}{tags}`, `${keyPrefix}{tags}:log`],
+      arguments: batch,
+    });
+  }
+}
+
+async function timed(operation: () => Promise<unknown>): Promise<number> {
+  const startedAt = performance.now();
+  await operation();
+
+  return performance.now() - startedAt;
+}
