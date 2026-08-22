@@ -11,8 +11,24 @@ import {
   storeBefore,
   streamOf,
 } from "../tests/handler-harness.js";
+import type { RedisCacheHandlerOptions } from "./options.js";
 
 const MAX_EXPIRE = 31_536_000;
+
+/**
+ * A handler whose Tag manifest key holds a string, so that every manifest command it
+ * runs fails on the server with a real error.
+ */
+async function withBrokenManifest(
+  overrides: Partial<RedisCacheHandlerOptions>,
+): Promise<ReturnType<typeof handlerFor>> {
+  const keyPrefix = freshPrefix();
+  const handler = handlerFor(keyPrefix, overrides);
+  const server = await serverClient();
+  await server.set(`${keyPrefix}{tags}`, "not a hash");
+
+  return handler;
+}
 
 test("a hit fires one hit event with the key and a non-negative duration", async () => {
   const recorded = recording();
@@ -110,11 +126,8 @@ test("a read that fails reports the failure as get, and still misses", async () 
 });
 
 test("a manifest read that fails reports the failure as refreshTags", async () => {
-  const keyPrefix = freshPrefix();
   const recorded = recording();
-  const handler = handlerFor(keyPrefix, recorded);
-  const server = await serverClient();
-  await server.set(`${keyPrefix}{tags}`, "not a hash");
+  const handler = await withBrokenManifest(recorded);
 
   await expect(handler.refreshTags()).resolves.toBeUndefined();
 
@@ -122,12 +135,9 @@ test("a manifest read that fails reports the failure as refreshTags", async () =
 });
 
 test("with no error hook, one failure reaches console.error once", async () => {
-  const keyPrefix = freshPrefix();
-  const handler = handlerFor(keyPrefix);
-  const server = await serverClient();
+  const handler = await withBrokenManifest({});
   const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
   onTestFinished(() => logged.mockRestore());
-  await server.set(`${keyPrefix}{tags}`, "not a hash");
 
   await handler.refreshTags();
 
@@ -136,11 +146,8 @@ test("with no error hook, one failure reaches console.error once", async () => {
 });
 
 test("a tag write that fails reports the failure as updateTags, and still rejects", async () => {
-  const keyPrefix = freshPrefix();
   const recorded = recording();
-  const handler = handlerFor(keyPrefix, recorded);
-  const server = await serverClient();
-  await server.set(`${keyPrefix}{tags}`, "not a hash");
+  const handler = await withBrokenManifest(recorded);
 
   await expect(handler.updateTags(["posts"])).rejects.toThrow();
 
