@@ -1,7 +1,13 @@
 import { createCacheClient } from "./client.js";
+import { DeadlineError, withDeadline } from "./deadline.js";
 import type { BufferedEntry, StoredEntry } from "./entry-hash.js";
 import { entryAge, entryKey, entryTtlSeconds, readEntry, writeEntry } from "./entry-store.js";
-import { createReporter, type CacheEvent, type CacheSkipReason } from "./events.js";
+import {
+  createReporter,
+  type CacheEvent,
+  type CacheMissReason,
+  type CacheSkipReason,
+} from "./events.js";
 import { resolveOptions, type RedisCacheHandlerOptions } from "./options.js";
 import { createTagManifest } from "./tag-manifest.js";
 import { readTagManifest, readTagManifestSince, writeTagEvents } from "./tag-store.js";
@@ -15,8 +21,7 @@ const STALE_REVALIDATE = -1;
  * miss and why. It maps one to one to the event `onEvent` receives.
  */
 type ReadOutcome =
-  | { kind: "hit" | "stale"; entry: CacheEntry }
-  | { kind: "miss"; reason: "absent" | "expired" | "unavailable" };
+  { kind: "hit" | "stale"; entry: CacheEntry } | { kind: "miss"; reason: CacheMissReason };
 
 /**
  * Build a Cache Handler backed by Redis or Valkey, so that every Instance of a
@@ -55,7 +60,7 @@ export function createRedisCacheHandler(
   options: RedisCacheHandlerOptions,
 ): CacheHandler & { close(): Promise<void> } {
   const resolved = resolveOptions(options);
-  const { keyPrefix, maxTtl, maxEntrySize } = resolved;
+  const { keyPrefix, maxTtl, maxEntrySize, operationTimeout } = resolved;
   const reporter = createReporter(resolved);
   const client = createCacheClient(resolved.connection, reporter.fail);
   const pendingSets = new Map<string, Promise<void>>();
@@ -82,15 +87,17 @@ export function createRedisCacheHandler(
       return;
     }
 
-    const connected = await client.connected();
+    await withDeadline(operationTimeout, async () => {
+      const connected = await client.connected();
 
-    await writeEntry(
-      connected,
-      entryKey(keyPrefix, cacheKey),
-      { ...entry, value },
-      age,
-      ttlSeconds,
-    );
+      await writeEntry(
+        connected,
+        entryKey(keyPrefix, cacheKey),
+        { ...entry, value },
+        age,
+        ttlSeconds,
+      );
+    });
     reporter.emit({ type: "set", key: cacheKey, durationMs: performance.now() - startedAt });
   }
 
@@ -100,25 +107,29 @@ export function createRedisCacheHandler(
     return readEntry(connected, entryKey(keyPrefix, cacheKey));
   }
 
-  async function read(cacheKey: string, softTags: string[]): Promise<ReadOutcome> {
+  async function served(cacheKey: string, softTags: string[]): Promise<ReadOutcome> {
     await pendingSets.get(cacheKey);
     if (manifest.serverNow() === undefined) return { kind: "miss", reason: "unavailable" };
 
+    const stored = await load(cacheKey);
+    if (stored === undefined) return { kind: "miss", reason: "absent" };
+    if (stored.expire < 0) return { kind: "miss", reason: "expired" };
+
+    const verdict = manifest.verdictFor(stored.tags, softTags, stored.writeTime);
+    if (verdict === "expired") return { kind: "miss", reason: "expired" };
+
+    const stale = verdict === "stale" || isPastRevalidate(stored, Date.now());
+
+    return { kind: stale ? "stale" : "hit", entry: entryOf(stored, stale) };
+  }
+
+  async function read(cacheKey: string, softTags: string[]): Promise<ReadOutcome> {
     try {
-      const stored = await load(cacheKey);
-      if (stored === undefined) return { kind: "miss", reason: "absent" };
-      if (stored.expire < 0) return { kind: "miss", reason: "expired" };
-
-      const verdict = manifest.verdictFor(stored.tags, softTags, stored.writeTime);
-      if (verdict === "expired") return { kind: "miss", reason: "expired" };
-
-      const stale = verdict === "stale" || isPastRevalidate(stored, Date.now());
-
-      return { kind: stale ? "stale" : "hit", entry: entryOf(stored, stale) };
+      return await withDeadline(operationTimeout, () => served(cacheKey, softTags));
     } catch (error) {
       reporter.fail(error, "get");
 
-      return { kind: "miss", reason: "unavailable" };
+      return { kind: "miss", reason: failedReason(error) };
     }
   }
 
@@ -176,9 +187,11 @@ export function createRedisCacheHandler(
       if (tags.length === 0) return;
 
       try {
-        const connected = await client.connected();
+        await withDeadline(operationTimeout, async () => {
+          const connected = await client.connected();
 
-        await writeTagEvents(connected, keyPrefix, tags, durations, maxTtl);
+          await writeTagEvents(connected, keyPrefix, tags, durations, maxTtl);
+        });
       } catch (error) {
         reporter.fail(error, "updateTags");
 
@@ -189,6 +202,10 @@ export function createRedisCacheHandler(
       return client.close();
     },
   };
+}
+
+function failedReason(error: unknown): CacheMissReason {
+  return error instanceof DeadlineError ? "timeout" : "unavailable";
 }
 
 function skipReason(
