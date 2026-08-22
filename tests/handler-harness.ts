@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createClient } from "redis";
 import { inject, onTestFinished } from "vitest";
 
@@ -13,6 +13,16 @@ const TICK_MS = 5;
 const SETTLE_TIMEOUT_MS = 5_000;
 
 const ARGUMENT = /"((?:[^"\\]|\\.)*)"/g;
+
+const ESCAPE = /\\(x[0-9a-fA-F]{2}|.)/g;
+
+const ESCAPES: Record<string, string> = {
+  a: "\u0007",
+  b: "\b",
+  n: "\n",
+  r: "\r",
+  t: "\t",
+};
 
 /** A value with bytes no UTF-8 decoder would give back, as an RSC payload has. */
 export const VALUE = Uint8Array.from([0x00, 0xff, 0xfe, 0x80, 0x01, 0xc3, 0x28]);
@@ -217,11 +227,49 @@ export async function commandStream(keyPrefix: string): Promise<CommandStream> {
   };
 }
 
-/** The names, uppercased, of the commands that carried the Tag manifest or its log. */
+/**
+ * The names, uppercased, of the commands that carried the Tag manifest or its log.
+ *
+ * One script run is one name, the `EVALSHA` that started it. A server that does not know
+ * the digest answers `NOSCRIPT` and the runner sends the source with `EVAL` right after,
+ * so that pair is reported as the single run it is: the script cache is server-wide, and
+ * whether the digest was already loaded depends on which worker of the run — or which
+ * `SCRIPT FLUSH` of another test — got there first, which is nothing a cell is about.
+ * The fallback is recognised by its digest, not by adjacency alone.
+ */
 export function tagCommandNames(commands: string[][], keyPrefix: string): string[] {
-  return commands
-    .filter((command) => command.some((argument) => argument.startsWith(`${keyPrefix}{tags}`)))
+  const carried = commands.filter((command) =>
+    command.some((argument) => argument.startsWith(`${keyPrefix}{tags}`)),
+  );
+
+  return carried
+    .filter((command, index) => !isScriptFallback(carried[index - 1], command))
     .map((command) => (command[0] ?? "").toUpperCase());
+}
+
+function isScriptFallback(previous: string[] | undefined, command: string[]): boolean {
+  const [name, script] = command;
+  const [previousName, digest] = previous ?? [];
+  if (name?.toUpperCase() !== "EVAL" || script === undefined) return false;
+
+  return previousName?.toUpperCase() === "EVALSHA" && digest === digestOf(script);
+}
+
+/**
+ * The digest of a script body as `MONITOR` reported it: the line escapes what a script
+ * source is full of — newlines first among them — and the digest is of the bytes the
+ * server received, so the escaping is undone before hashing.
+ */
+function digestOf(script: string): string {
+  return createHash("sha1").update(unescaped(script)).digest("hex");
+}
+
+function unescaped(argument: string): string {
+  return argument.replace(ESCAPE, (_, escape: string) =>
+    escape.startsWith("x")
+      ? String.fromCharCode(Number.parseInt(escape.slice(1), 16))
+      : (ESCAPES[escape] ?? escape),
+  );
 }
 
 function argumentsOf(line: string): string[] {

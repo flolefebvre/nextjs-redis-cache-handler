@@ -6,6 +6,8 @@ import {
   freshPrefix,
   handlerFor,
   instancePair,
+  opsOf,
+  recording,
   seedTagEvents,
   serverClient,
   type ServerClient,
@@ -14,6 +16,7 @@ import {
   tagCommandNames,
   tick,
 } from "../tests/handler-harness.js";
+import { stopwatch } from "../tests/unit-harness.js";
 import { DEFAULT_OPERATION_TIMEOUT } from "./options.js";
 import { createRedisCacheHandler } from "./redis-cache-handler.js";
 
@@ -33,7 +36,13 @@ const SEEDED_AGE_MS = 60_000;
 
 const SLOW_TIMEOUT_MS = 60_000;
 
-const COST_RATIO = 5;
+/**
+ * How many fields of the Tag manifest a watermark refresh may name, out of the
+ * SEEDED_TAGS the manifest holds: only the warm-up tag was written inside the margin the
+ * read reaches back over, and a read that fell back to the whole log would name every
+ * seeded tag instead.
+ */
+const WATERMARK_FIELDS = 10;
 
 const SEED = `
 local clock = redis.call('TIME')
@@ -198,21 +207,27 @@ test("two Instances writing on the same millisecond are both seen by a third", a
 });
 
 test(
-  "with a manifest of a hundred thousand tags, a watermark refresh costs a fraction of a full one",
+  "with a manifest of a hundred thousand tags, a watermark refresh reads a handful of them",
   { timeout: SLOW_TIMEOUT_MS },
   async () => {
     const keyPrefix = freshPrefix();
     const server = await serverClient();
     await seedManifest(server, keyPrefix, SEEDED_TAGS);
-    const handler = handlerFor(keyPrefix);
+    const { errors, hooks } = recording();
+    const handler = handlerFor(keyPrefix, hooks);
     await handler.updateTags(["warm-up"]);
+    await handler.refreshTags();
+    const stream = await commandStream(keyPrefix);
 
-    const fullMs = await timed(() => handler.refreshTags());
-    const hGetAllMs = await timed(() => server.hGetAll(`${keyPrefix}{tags}`));
-    const watermarkMs = await timed(() => handler.refreshTags());
+    const elapsed = stopwatch();
+    await handler.refreshTags();
+    const watermarkMs = elapsed();
 
+    const commands = await stream.settled();
+    expect(opsOf(errors)).toEqual([]);
+    expect(tagCommandNames(commands, keyPrefix)).not.toContain("HGETALL");
+    expect(manifestFieldsRead(commands, keyPrefix)).toBeLessThanOrEqual(WATERMARK_FIELDS);
     expect(watermarkMs).toBeLessThan(DEFAULT_OPERATION_TIMEOUT);
-    expect(watermarkMs * COST_RATIO).toBeLessThan(Math.min(fullMs, hGetAllMs));
   },
 );
 
@@ -226,9 +241,11 @@ async function seedManifest(server: ServerClient, keyPrefix: string, tags: numbe
   }
 }
 
-async function timed(operation: () => Promise<unknown>): Promise<number> {
-  const startedAt = performance.now();
-  await operation();
-
-  return performance.now() - startedAt;
+function manifestFieldsRead(commands: string[][], keyPrefix: string): number {
+  return commands
+    .filter(
+      (command) =>
+        (command[0] ?? "").toUpperCase() === "HMGET" && command[1] === `${keyPrefix}{tags}`,
+    )
+    .reduce((fields, command) => fields + command.length - 2, 0);
 }
