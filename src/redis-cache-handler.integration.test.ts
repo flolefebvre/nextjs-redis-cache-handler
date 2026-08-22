@@ -1,4 +1,5 @@
-import { expect, test } from "vitest";
+import { createClient } from "redis";
+import { expect, inject, onTestFinished, test } from "vitest";
 
 import {
   VALUE,
@@ -6,13 +7,17 @@ import {
   entryOf,
   freshPrefix,
   handlerFor,
+  opsOf,
   recording,
   serverClient,
   timingsOf,
 } from "../tests/handler-harness.js";
+import { createRedisCacheHandler } from "./redis-cache-handler.js";
 import type { CacheEntry } from "./types.js";
 
 const SHORT_TIMEOUT = 200;
+
+const RETRY_BUDGET = 200;
 
 test("an Entry written by set comes back from get unchanged", async () => {
   const handler = handlerFor(freshPrefix());
@@ -216,4 +221,26 @@ test("a key nobody wrote is a miss", async () => {
   await handler.refreshTags();
 
   expect(await handler.get("never-written", [])).toBeUndefined();
+});
+
+test("an invalidation that kept failing reports once, whatever the connection reports", async () => {
+  const injected = createClient({ url: inject("redisUrl") });
+  injected.on("error", () => undefined);
+  await injected.connect();
+  const recorded = recording();
+  const handler = createRedisCacheHandler({
+    client: injected,
+    keyPrefix: freshPrefix(),
+    updateTagsTimeout: RETRY_BUDGET,
+    ...recorded.hooks,
+  });
+  onTestFinished(() => handler.close());
+
+  const invalidating = handler.updateTags(["posts"]);
+  injected.destroy();
+  await expect(invalidating).rejects.toThrowError("updateTags");
+  injected.emit("error", new Error("a socket failure surfacing after the budget"));
+
+  expect(opsOf(recorded.errors).filter((op) => op === "updateTags")).toEqual(["updateTags"]);
+  expect(opsOf(recorded.errors)).toContain("connect");
 });
