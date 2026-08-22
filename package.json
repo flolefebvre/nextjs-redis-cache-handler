@@ -55,7 +55,8 @@
     "test:integration": "vitest run --project integration",
     "pack:check": "tsx scripts/pack-check.ts",
     "typecheck:dist": "tsc -p tests/dist-consumer/tsconfig.json",
-    "gate": "tsx scripts/gate.ts format:check,lint,duplication,typecheck,test,build,pack:check,typecheck:dist",
+    "smoke:dist": "tsx scripts/smoke-dist.ts",
+    "gate": "tsx scripts/gate.ts format:check,lint,duplication,typecheck,test,build,pack:check,typecheck:dist,smoke:dist",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {

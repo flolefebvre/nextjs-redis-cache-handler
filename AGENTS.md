@@ -24,7 +24,8 @@ src/            Library source, collocated .test.ts and .integration.test.ts
   types.ts      The vendored Next.js cache handler interface
 scripts/        Repo tooling, run with tsx
 tests/          Test harness wiring, and tests that exercise it
-  dist-consumer/  A consumer compiled against the built output, for typecheck:dist
+  dist-consumer/  A consumer compiled against the built output, for typecheck:dist, and the
+                  .mjs/.cjs processes smoke:dist runs against it
 docs/
   codebase/     Conventions, one file per area, linked from the AGENTS.md section it governs
   adr/          Architectural decisions
@@ -35,7 +36,7 @@ docs/
 ## Commands
 
 ```
-pnpm gate            Format check, lint, duplication, typecheck, test, build, pack:check, typecheck:dist — the full check; needs Docker running
+pnpm gate            Format check, lint, duplication, typecheck, test, build, pack:check, typecheck:dist, smoke:dist — the full check; needs Docker running
 pnpm build           Clean and compile to dist/ with tsc
 pnpm format          Prettier, rewriting files in place
 pnpm format:check    Prettier in check mode (fails on unformatted files)
@@ -47,6 +48,7 @@ pnpm test:unit       The unit project only (Docker-free)
 pnpm test:integration The integration project only; needs Docker running
 pnpm pack:check      Assert what `npm pack` would ship (build first)
 pnpm typecheck:dist  Compile a consumer against the built output through the exports map (build first)
+pnpm smoke:dist      Load the built ./handler from an ESM and a CommonJS process (build first)
 ```
 
 **Before considering a change done:** run `pnpm gate`. It passed only if the output ends with `--gate OK--` — anything else is a failure, whatever the rest of the output says.
