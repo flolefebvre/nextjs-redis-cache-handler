@@ -52,7 +52,11 @@ type ReadOutcome =
  * it may have landed. Each attempt is bounded by `operationTimeout` or by what is left of
  * the budget, whichever is smaller, so the caller waits the budget and no more, and
  * `onError` is called exactly once for the whole call, on the failure it ends with — not
- * once per attempt. A call with no tag is not a round trip at all.
+ * once per attempt. Every failure is retried, a deterministic one included: a reply
+ * error is not read as final, since `LOADING`, `READONLY`, `CLUSTERDOWN` and `TRYAGAIN`
+ * are reply errors an instant later succeeds through, so a write that can only fail
+ * takes the whole budget before it throws. A call with no tag is not a round trip at
+ * all.
  *
  * `operationTimeout` bounds every one of them, the wait on the connection included, so
  * that a store that stopped answering makes the app slower and never blocks it. A `get`
