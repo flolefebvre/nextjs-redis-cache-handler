@@ -1,0 +1,149 @@
+import { expect, test } from "vitest";
+
+import {
+  createTagManifest,
+  encodeTagDurations,
+  parseTagStates,
+  tagVerdict,
+  type TagState,
+} from "./tag-manifest.js";
+
+const NOW = 1787325433671;
+
+function states(entries: Record<string, TagState>): Map<string, TagState> {
+  return new Map(Object.entries(entries));
+}
+
+test("a manifest value is the two instants the tag was last made Stale and Expired", () => {
+  expect(parseTagStates({ posts: "10:20", "post:1": "30:30" })).toEqual(
+    states({ posts: { staleAt: 10, expiredAt: 20 }, "post:1": { staleAt: 30, expiredAt: 30 } }),
+  );
+});
+
+test("a manifest value that is not two numbers is dropped, the rest is kept", () => {
+  expect(
+    parseTagStates({ ok: "1:2", missing: "1", empty: "", words: "a:b", extra: "1:2:3" }),
+  ).toEqual(states({ ok: { staleAt: 1, expiredAt: 2 } }));
+});
+
+test("an empty manifest hash parses to an empty local copy", () => {
+  expect(parseTagStates({})).toEqual(new Map());
+});
+
+test("no durations expires the tags now", () => {
+  expect(encodeTagDurations(undefined)).toEqual({ mode: "expire-now", expireMs: 0 });
+});
+
+test("an expire duration expires the tags that many seconds from now", () => {
+  expect(encodeTagDurations({ expire: 31536000 })).toEqual({
+    mode: "expire-after",
+    expireMs: 31536000000,
+  });
+  expect(encodeTagDurations({ expire: 0 })).toEqual({ mode: "expire-after", expireMs: 0 });
+});
+
+test("durations without an expire leave the tags' expiration where it was", () => {
+  expect(encodeTagDurations({})).toEqual({ mode: "expire-unchanged", expireMs: 0 });
+  expect(encodeTagDurations({ expire: undefined })).toEqual({
+    mode: "expire-unchanged",
+    expireMs: 0,
+  });
+});
+
+test("an expire that is not a finite number of seconds is the never sentinel", () => {
+  expect(encodeTagDurations({ expire: Infinity })).toEqual({
+    mode: "expire-after",
+    expireMs: 4294967294000,
+  });
+  expect(encodeTagDurations({ expire: Number.NaN })).toEqual({
+    mode: "expire-after",
+    expireMs: 4294967294000,
+  });
+});
+
+test("an Entry no tag of which was ever touched is fresh", () => {
+  expect(tagVerdict(states({}), ["posts"], ["_N_T_/layout"], NOW, NOW + 1)).toBe("fresh");
+  expect(
+    tagVerdict(states({ other: { staleAt: NOW, expiredAt: NOW } }), ["posts"], [], NOW, NOW),
+  ).toBe("fresh");
+});
+
+test("an Entry with no tags at all is fresh", () => {
+  expect(tagVerdict(states({ posts: { staleAt: NOW, expiredAt: NOW } }), [], [], 1, NOW)).toBe(
+    "fresh",
+  );
+});
+
+test("a tag expired after the Entry was written makes it expired", () => {
+  const manifest = states({ posts: { staleAt: NOW, expiredAt: NOW } });
+
+  expect(tagVerdict(manifest, ["posts"], [], NOW - 1, NOW)).toBe("expired");
+});
+
+test("a tag expired before the Entry was written leaves it fresh", () => {
+  const manifest = states({ posts: { staleAt: NOW, expiredAt: NOW } });
+
+  expect(tagVerdict(manifest, ["posts"], [], NOW, NOW)).toBe("fresh");
+  expect(tagVerdict(manifest, ["posts"], [], NOW + 1, NOW)).toBe("fresh");
+});
+
+test("a tag whose expiration is still in the future does not expire the Entry yet", () => {
+  const manifest = states({ posts: { staleAt: NOW - 10, expiredAt: NOW + 1 } });
+
+  expect(tagVerdict(manifest, ["posts"], [], NOW - 20, NOW)).toBe("stale");
+});
+
+test("a tag made Stale after the Entry was written makes it Stale", () => {
+  const manifest = states({ posts: { staleAt: NOW, expiredAt: NOW + 1000 } });
+
+  expect(tagVerdict(manifest, ["posts"], [], NOW - 1, NOW)).toBe("stale");
+  expect(tagVerdict(manifest, ["posts"], [], NOW, NOW)).toBe("fresh");
+});
+
+test("an expired tag wins over a Stale one, whichever order they come in", () => {
+  const manifest = states({
+    stale: { staleAt: NOW, expiredAt: NOW + 1000 },
+    gone: { staleAt: NOW, expiredAt: NOW },
+  });
+
+  expect(tagVerdict(manifest, ["stale", "gone"], [], NOW - 1, NOW)).toBe("expired");
+  expect(tagVerdict(manifest, ["gone", "stale"], [], NOW - 1, NOW)).toBe("expired");
+});
+
+test("a Soft tag is compared exactly like an Explicit one", () => {
+  const manifest = states({ "_N_T_/blog": { staleAt: NOW, expiredAt: NOW } });
+
+  expect(tagVerdict(manifest, [], ["_N_T_/blog"], NOW - 1, NOW)).toBe("expired");
+  expect(tagVerdict(manifest, [], ["_N_T_/blog"], NOW + 1, NOW)).toBe("fresh");
+});
+
+test("a local copy answers nothing until a refresh has landed", () => {
+  const manifest = createTagManifest();
+
+  expect(manifest.serverNow()).toBeUndefined();
+});
+
+test("a refresh replaces the local copy wholesale", () => {
+  const manifest = createTagManifest();
+
+  manifest.replaceWith({
+    serverNow: NOW,
+    states: states({ posts: { staleAt: NOW, expiredAt: NOW } }),
+  });
+  manifest.replaceWith({
+    serverNow: NOW + 5,
+    states: states({ other: { staleAt: 1, expiredAt: 2 } }),
+  });
+
+  expect(manifest.verdictFor(["posts"], [], NOW - 1)).toBe("fresh");
+  expect(manifest.verdictFor(["other"], [], 1)).toBe("expired");
+});
+
+test("the server clock the local copy answers on moves forward from the last refresh", () => {
+  const manifest = createTagManifest();
+
+  manifest.replaceWith({ serverNow: NOW, states: states({}) });
+
+  expect(manifest.serverNow()).toBeGreaterThanOrEqual(NOW);
+  expect(manifest.serverNow()).toBeLessThan(NOW + 60_000);
+});
