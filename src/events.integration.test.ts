@@ -32,7 +32,7 @@ async function withBrokenManifest(
 
 test("a hit fires one hit event with the key and a non-negative duration", async () => {
   const recorded = recording();
-  const handler = handlerFor(freshPrefix(), recorded);
+  const handler = handlerFor(freshPrefix(), recorded.hooks);
   await storeBefore(handler, "key");
   await handler.refreshTags();
   recorded.events.length = 0;
@@ -46,7 +46,7 @@ test("a hit fires one hit event with the key and a non-negative duration", async
 
 test("a key that was never written fires one absent miss", async () => {
   const recorded = recording();
-  const handler = handlerFor(freshPrefix(), recorded);
+  const handler = handlerFor(freshPrefix(), recorded.hooks);
   await handler.refreshTags();
 
   await handler.get("nothing", []);
@@ -58,7 +58,7 @@ test("a key that was never written fires one absent miss", async () => {
 
 test("an Entry a tag has expired fires one expired miss", async () => {
   const recorded = recording();
-  const handler = handlerFor(freshPrefix(), recorded);
+  const handler = handlerFor(freshPrefix(), recorded.hooks);
   await storeBefore(handler, "key", { tags: ["posts"] });
   await handler.updateTags(["posts"]);
   await handler.refreshTags();
@@ -73,7 +73,7 @@ test("an Entry a tag has expired fires one expired miss", async () => {
 
 test("an Entry a tag has made stale fires one stale event", async () => {
   const recorded = recording();
-  const handler = handlerFor(freshPrefix(), recorded);
+  const handler = handlerFor(freshPrefix(), recorded.hooks);
   await storeBefore(handler, "key", { tags: ["posts"] });
   await handler.updateTags(["posts"], { expire: MAX_EXPIRE });
   await handler.refreshTags();
@@ -86,7 +86,7 @@ test("an Entry a tag has made stale fires one stale event", async () => {
 
 test("a read before the Tag manifest was ever read is an unavailable miss, and no error", async () => {
   const recorded = recording();
-  const handler = handlerFor(freshPrefix(), recorded);
+  const handler = handlerFor(freshPrefix(), recorded.hooks);
 
   expect(await handler.get("key", [])).toBeUndefined();
 
@@ -112,7 +112,7 @@ test("an event hook that throws leaves the read's result untouched", async () =>
 test("a read that fails reports the failure as get, and still misses", async () => {
   const keyPrefix = freshPrefix();
   const recorded = recording();
-  const handler = handlerFor(keyPrefix, recorded);
+  const handler = handlerFor(keyPrefix, recorded.hooks);
   const server = await serverClient();
   await handler.refreshTags();
   await server.set(`${keyPrefix}entry:key`, "not a hash");
@@ -127,7 +127,7 @@ test("a read that fails reports the failure as get, and still misses", async () 
 
 test("a manifest read that fails reports the failure as refreshTags", async () => {
   const recorded = recording();
-  const handler = await withBrokenManifest(recorded);
+  const handler = await withBrokenManifest(recorded.hooks);
 
   await expect(handler.refreshTags()).resolves.toBeUndefined();
 
@@ -147,7 +147,7 @@ test("with no error hook, one failure reaches console.error once", async () => {
 
 test("a tag write that fails reports the failure as updateTags, and still rejects", async () => {
   const recorded = recording();
-  const handler = await withBrokenManifest(recorded);
+  const handler = await withBrokenManifest(recorded.hooks);
 
   await expect(handler.updateTags(["posts"])).rejects.toThrow();
 
@@ -157,7 +157,7 @@ test("a tag write that fails reports the failure as updateTags, and still reject
 test("a write that fails reports the failure as set, and set still resolves", async () => {
   const keyPrefix = freshPrefix();
   const recorded = recording();
-  const handler = handlerFor(keyPrefix, recorded);
+  const handler = handlerFor(keyPrefix, recorded.hooks);
   const server = await serverClient();
   await server.set(`${keyPrefix}entry:key`, "not a hash");
 
@@ -169,7 +169,7 @@ test("a write that fails reports the failure as set, and set still resolves", as
 
 test("a write fires one set event with the key and a non-negative duration", async () => {
   const recorded = recording();
-  const handler = handlerFor(freshPrefix(), recorded);
+  const handler = handlerFor(freshPrefix(), recorded.hooks);
 
   await handler.set("key", Promise.resolve(entryOf()));
 
@@ -181,7 +181,7 @@ test("a write fires one set event with the key and a non-negative duration", asy
 test("an Entry bigger than maxEntrySize is skipped, stored nowhere, and read back absent", async () => {
   const keyPrefix = freshPrefix();
   const recorded = recording();
-  const handler = handlerFor(keyPrefix, { ...recorded, maxEntrySize: 16 });
+  const handler = handlerFor(keyPrefix, { ...recorded.hooks, maxEntrySize: 16 });
   const server = await serverClient();
   await handler.refreshTags();
 
@@ -198,7 +198,7 @@ test("an Entry bigger than maxEntrySize is skipped, stored nowhere, and read bac
 test("an Entry exactly at maxEntrySize is stored", async () => {
   const keyPrefix = freshPrefix();
   const recorded = recording();
-  const handler = handlerFor(keyPrefix, { ...recorded, maxEntrySize: 16 });
+  const handler = handlerFor(keyPrefix, { ...recorded.hooks, maxEntrySize: 16 });
   const server = await serverClient();
 
   await handler.set("edge", Promise.resolve(entryOf({ value: streamOf(new Uint8Array(16)) })));
@@ -210,7 +210,7 @@ test("an Entry exactly at maxEntrySize is stored", async () => {
 test("an Entry the wrapper would read as expired is skipped and stored nowhere", async () => {
   const keyPrefix = freshPrefix();
   const recorded = recording();
-  const handler = handlerFor(keyPrefix, recorded);
+  const handler = handlerFor(keyPrefix, recorded.hooks);
   const server = await serverClient();
 
   await handler.set("dead", Promise.resolve(entryOf({ expire: 0 })));

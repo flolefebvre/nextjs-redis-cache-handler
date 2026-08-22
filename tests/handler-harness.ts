@@ -26,12 +26,15 @@ export function handlerFor(
   return handler;
 }
 
-/** Hooks that collect what a handler reports, and what they have collected so far. */
+/**
+ * Hooks that collect what a handler reports, and what they have collected so far. The
+ * hooks are grouped under `hooks` because that object is handed to the factory as it is,
+ * and the factory rejects any key that is not an option.
+ */
 export function recording(): {
   events: CacheEvent[];
   errors: [unknown, CacheErrorOp][];
-  onEvent: CacheEventHook;
-  onError: CacheErrorHook;
+  hooks: { onEvent: CacheEventHook; onError: CacheErrorHook };
 } {
   const events: CacheEvent[] = [];
   const errors: [unknown, CacheErrorOp][] = [];
@@ -39,8 +42,10 @@ export function recording(): {
   return {
     events,
     errors,
-    onEvent: (event) => events.push(event),
-    onError: (error, op) => errors.push([error, op]),
+    hooks: {
+      onEvent: (event) => events.push(event),
+      onError: (error, op) => errors.push([error, op]),
+    },
   };
 }
 

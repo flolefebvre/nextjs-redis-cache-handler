@@ -1,6 +1,7 @@
 import { createClient, type RedisArgument, type TypeMapping } from "redis";
 
 import type { CacheErrorHook } from "./events.js";
+import type { CacheConnection } from "./options.js";
 
 const CONNECT_TIMEOUT = 2_000;
 const SOCKET_TIMEOUT = 30_000;
@@ -55,16 +56,29 @@ export interface CacheCommands {
 export interface CacheClient {
   /** This client, seen through the given type mapping. */
   withTypeMapping(typeMapping: TypeMapping): CacheCommands;
+  /** Listen to the client's failures, inside an operation and outside any. */
+  on(event: "error", listener: (error: unknown) => void): unknown;
+  /** Stop listening: what `close()` undoes of what the handler attached. */
+  off(event: "error", listener: (error: unknown) => void): unknown;
 }
 
-/** A client the handler owns: connected on first use, quit on `close()`. */
+/**
+ * The client of one handler object, whoever owns it: the same two calls whether the
+ * handler created it from a URL or the caller injected it.
+ */
 export interface CacheClientHandle {
-  /** The client, connecting it on the first call and reusing it afterwards. */
+  /**
+   * The client to run an operation on, connecting it on the first call when the handler
+   * owns it. An injected client is returned as it is, connected or not: connecting a
+   * client the caller owns would change a lifecycle that is theirs.
+   */
   connected(): Promise<CacheClient>;
   /**
-   * Quit the client, or resolve immediately when it was never used. A connection
-   * attempt still in progress is destroyed rather than awaited: the reconnect strategy
-   * never gives up, so a shutdown during an outage would otherwise never return.
+   * Quit a client the handler owns, or resolve immediately when it was never used. A
+   * connection attempt still in progress is destroyed rather than awaited: the reconnect
+   * strategy never gives up, so a shutdown during an outage would otherwise never return.
+   * An injected client is left open, and only the handler's own `error` listener is
+   * taken off it.
    */
   close(): Promise<void>;
 }
@@ -83,9 +97,25 @@ export interface CacheClientHandle {
  * operation of the handler. `fail` is the reporter's, which never throws, so nothing of
  * a caller's can propagate back into node-redis's emitter.
  */
-export function createCacheClient(url: string, fail: CacheErrorHook): CacheClientHandle {
+export function createCacheClient(
+  connection: CacheConnection,
+  fail: CacheErrorHook,
+): CacheClientHandle {
+  const report = (error: unknown): void => {
+    fail(error, "connect");
+  };
+
+  return "url" in connection
+    ? ownedClient(connection.url, report)
+    : injectedClient(connection.client, report);
+}
+
+/**
+ * The handler's own client: created here, connected on first use and quit on `close()`.
+ */
+function ownedClient(url: string, report: (error: unknown) => void): CacheClientHandle {
   const client = createTunedClient(url);
-  client.on("error", (error: unknown) => fail(error, "connect"));
+  client.on("error", report);
 
   let connecting: Promise<CacheClient> | undefined;
 
@@ -116,6 +146,27 @@ export function createCacheClient(url: string, fail: CacheErrorHook): CacheClien
       }
 
       await attempt.catch(() => undefined);
+    },
+  };
+}
+
+/**
+ * A client the caller owns: used exactly as it was handed over. The `error` listener is
+ * the one thing the handler adds, so that a connection failure of an injected client is
+ * reported like any other, and `close()` takes that listener back off: one long-lived
+ * client feeding many handler objects must not collect a listener per handler.
+ */
+function injectedClient(client: CacheClient, report: (error: unknown) => void): CacheClientHandle {
+  client.on("error", report);
+
+  return {
+    connected(): Promise<CacheClient> {
+      return Promise.resolve(client);
+    },
+    close(): Promise<void> {
+      client.off("error", report);
+
+      return Promise.resolve();
     },
   };
 }
