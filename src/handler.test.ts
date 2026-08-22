@@ -19,16 +19,12 @@ const UNREACHABLE = "redis://127.0.0.1:6379";
 
 type ClosableHandler = CacheHandler & { close?: () => Promise<void> };
 
-/**
- * The Node.js target of the Zero-config entry, loaded again against nothing but the given
- * environment. `handler.ts` itself is a re-export through a package self-reference, which
- * only a real Node.js resolver follows; `smoke:dist` is what covers that hop.
- */
+/** The Zero-config entry, loaded again against nothing but the given environment. */
 async function loadEntry(env: Record<string, string> = {}): Promise<ClosableHandler> {
   for (const variable of VARIABLES) vi.stubEnv(variable, env[variable]);
   vi.resetModules();
 
-  return (await import("./handler.node.js")).default;
+  return (await import("./handler.js")).default;
 }
 
 afterEach(() => {

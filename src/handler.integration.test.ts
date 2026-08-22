@@ -20,16 +20,14 @@ const NO_SERVER_THERE = "redis://127.0.0.1:1";
 type ClosableHandler = CacheHandler & { close?: () => Promise<void> };
 
 /**
- * The Node.js target of the Zero-config entry, loaded against the shared server of the run
- * and the given variables, and shut down when the test ends. `handler.ts` itself is a
- * re-export through a package self-reference, which resolves against the built output and
- * so cannot be loaded from source; `smoke:dist` is what covers that hop.
+ * The Zero-config entry, loaded against the shared server of the run and the given
+ * variables, and shut down when the test ends.
  */
 async function entryWith(env: Record<string, string>): Promise<ClosableHandler> {
   for (const variable of VARIABLES) vi.stubEnv(variable, env[variable]);
   vi.stubEnv("REDIS_URL", env.REDIS_URL ?? inject("redisUrl"));
   vi.resetModules();
-  const handler: ClosableHandler = (await import("./handler.node.js")).default;
+  const handler: ClosableHandler = (await import("./handler.js")).default;
   onTestFinished(async () => {
     await handler.close?.();
     vi.unstubAllEnvs();
