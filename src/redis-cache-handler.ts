@@ -1,8 +1,13 @@
 import { createCacheClient } from "./client.js";
 import type { BufferedEntry, StoredEntry } from "./entry-hash.js";
 import { entryAge, entryKey, entryTtlSeconds, readEntry, writeEntry } from "./entry-store.js";
-import { createReporter, type CacheEvent } from "./events.js";
-import { DEFAULT_KEY_PREFIX, DEFAULT_MAX_TTL, type RedisCacheHandlerOptions } from "./options.js";
+import { createReporter, type CacheEvent, type CacheSkipReason } from "./events.js";
+import {
+  DEFAULT_KEY_PREFIX,
+  DEFAULT_MAX_ENTRY_SIZE,
+  DEFAULT_MAX_TTL,
+  type RedisCacheHandlerOptions,
+} from "./options.js";
 import { createTagManifest } from "./tag-manifest.js";
 import { readTagManifest, writeTagEvents } from "./tag-store.js";
 import type { CacheEntry, CacheHandler, Timestamp } from "./types.js";
@@ -29,7 +34,9 @@ type ReadOutcome =
  *
  * Neither `get` nor `set` ever rejects: a read that fails is a miss and a write that
  * fails is dropped. Next.js awaits pending writes after a Server Action, so a rejected
- * `set` would fail the user's action over a cache blip. `refreshTags` never rejects
+ * `set` would fail the user's action over a cache blip. An Entry the wrapper would read
+ * as expired, or one whose value is larger than `maxEntrySize`, is not written at all
+ * and is reported as a `skip`. `refreshTags` never rejects
  * either — a rejection would fail every cache read of the request — but until one full
  * read of the Tag manifest has succeeded in this process every `get` is a miss: a miss
  * is slow, serving an Entry a mutation has already dropped is wrong. `updateTags` does
@@ -40,6 +47,7 @@ export function createRedisCacheHandler(
 ): CacheHandler & { close(): Promise<void> } {
   const keyPrefix = options.keyPrefix ?? DEFAULT_KEY_PREFIX;
   const maxTtl = options.maxTtl ?? DEFAULT_MAX_TTL;
+  const maxEntrySize = options.maxEntrySize ?? DEFAULT_MAX_ENTRY_SIZE;
   const reporter = createReporter(options);
   const client = createCacheClient(options.url, reporter.fail);
   const pendingSets = new Map<string, Promise<void>>();
@@ -49,7 +57,19 @@ export function createRedisCacheHandler(
   async function store(cacheKey: string, pendingEntry: Promise<CacheEntry>): Promise<void> {
     const entry = await pendingEntry;
     const value = await readStream(entry.value);
-    if (entry.expire <= 0) return;
+    const startedAt = performance.now();
+    const skipped = skipReason(entry, value, maxEntrySize);
+    if (skipped !== undefined) {
+      reporter.emit({
+        type: "skip",
+        reason: skipped,
+        size: value.byteLength,
+        key: cacheKey,
+        durationMs: performance.now() - startedAt,
+      });
+
+      return;
+    }
 
     const age = entryAge(entry.timestamp, Date.now());
     const connected = await client.connected();
@@ -61,6 +81,7 @@ export function createRedisCacheHandler(
       age,
       entryTtlSeconds(entry.expire, maxTtl),
     );
+    reporter.emit({ type: "set", key: cacheKey, durationMs: performance.now() - startedAt });
   }
 
   async function load(cacheKey: string): Promise<StoredEntry | undefined> {
@@ -146,6 +167,17 @@ export function createRedisCacheHandler(
       return client.close();
     },
   };
+}
+
+function skipReason(
+  entry: CacheEntry,
+  value: Uint8Array,
+  maxEntrySize: number,
+): CacheSkipReason | undefined {
+  if (entry.expire <= 0) return "expire-zero";
+  if (value.byteLength > maxEntrySize) return "too-large";
+
+  return undefined;
 }
 
 function eventOf(outcome: ReadOutcome, key: string, durationMs: number): CacheEvent {

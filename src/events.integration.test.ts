@@ -1,6 +1,7 @@
 import { expect, onTestFinished, test, vi } from "vitest";
 
 import {
+  VALUE,
   entryOf,
   freshPrefix,
   handlerFor,
@@ -8,6 +9,7 @@ import {
   recording,
   serverClient,
   storeBefore,
+  streamOf,
 } from "../tests/handler-harness.js";
 
 const MAX_EXPIRE = 31_536_000;
@@ -156,4 +158,78 @@ test("a write that fails reports the failure as set, and set still resolves", as
 
   expect(opsOf(recorded.errors)).toEqual(["set"]);
   expect(recorded.events).toEqual([]);
+});
+
+test("a write fires one set event with the key and a non-negative duration", async () => {
+  const recorded = recording();
+  const handler = handlerFor(freshPrefix(), recorded);
+
+  await handler.set("key", Promise.resolve(entryOf()));
+
+  expect(recorded.events).toHaveLength(1);
+  expect(recorded.events[0]).toMatchObject({ type: "set", key: "key" });
+  expect(recorded.events[0]?.durationMs).toBeGreaterThanOrEqual(0);
+});
+
+test("an Entry bigger than maxEntrySize is skipped, stored nowhere, and read back absent", async () => {
+  const keyPrefix = freshPrefix();
+  const recorded = recording();
+  const handler = handlerFor(keyPrefix, { ...recorded, maxEntrySize: 16 });
+  const server = await serverClient();
+  await handler.refreshTags();
+
+  await handler.set("big", Promise.resolve(entryOf({ value: streamOf(new Uint8Array(17)) })));
+
+  expect(recorded.events).toEqual([
+    { type: "skip", reason: "too-large", size: 17, key: "big", durationMs: expect.any(Number) },
+  ]);
+  expect(await server.exists(`${keyPrefix}entry:big`)).toBe(0);
+  expect(await handler.get("big", [])).toBeUndefined();
+  expect(recorded.events.at(-1)).toMatchObject({ type: "miss", reason: "absent" });
+});
+
+test("an Entry exactly at maxEntrySize is stored", async () => {
+  const keyPrefix = freshPrefix();
+  const recorded = recording();
+  const handler = handlerFor(keyPrefix, { ...recorded, maxEntrySize: 16 });
+  const server = await serverClient();
+
+  await handler.set("edge", Promise.resolve(entryOf({ value: streamOf(new Uint8Array(16)) })));
+
+  expect(recorded.events).toEqual([{ type: "set", key: "edge", durationMs: expect.any(Number) }]);
+  expect(await server.exists(`${keyPrefix}entry:edge`)).toBe(1);
+});
+
+test("an Entry the wrapper would read as expired is skipped and stored nowhere", async () => {
+  const keyPrefix = freshPrefix();
+  const recorded = recording();
+  const handler = handlerFor(keyPrefix, recorded);
+  const server = await serverClient();
+
+  await handler.set("dead", Promise.resolve(entryOf({ expire: 0 })));
+
+  expect(recorded.events).toEqual([
+    {
+      type: "skip",
+      reason: "expire-zero",
+      size: VALUE.byteLength,
+      key: "dead",
+      durationMs: expect.any(Number),
+    },
+  ]);
+  expect(await server.exists(`${keyPrefix}entry:dead`)).toBe(0);
+});
+
+test("an event hook that throws leaves the write untouched", async () => {
+  const keyPrefix = freshPrefix();
+  const handler = handlerFor(keyPrefix, {
+    onEvent: () => {
+      throw new Error("hook");
+    },
+  });
+  const server = await serverClient();
+
+  await expect(handler.set("key", Promise.resolve(entryOf()))).resolves.toBeUndefined();
+
+  expect(await server.exists(`${keyPrefix}entry:key`)).toBe(1);
 });
