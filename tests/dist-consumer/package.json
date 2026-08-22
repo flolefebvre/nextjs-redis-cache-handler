@@ -1,0 +1,10 @@
+{
+  "name": "dist-consumer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Compiles against the built output through the exports map, as a consumer does.",
+  "dependencies": {
+    "@flefebvre/nextjs-redis-cache-handler": "workspace:*"
+  }
+}
