@@ -1,3 +1,11 @@
+node_modules
+dist
+coverage
+*.log
+.DS_Store
+.env
+.env.*
+
 .claude/worktrees/
 prototypes/
 CLAUDE.local.md
