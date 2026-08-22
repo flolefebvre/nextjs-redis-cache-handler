@@ -112,9 +112,9 @@ export function wait(ms: number): Promise<void> {
 }
 
 /**
- * A real pause long enough for the server clock to move on. Tag events and Write times
- * are compared strictly, so a test that means "before" must not land on the same
- * millisecond.
+ * A real pause long enough for the server clock to move on. A tag event stamped on the
+ * very millisecond of a Write time drops the Entry, so a test that means "before" must not
+ * land on the same millisecond as what follows it.
  */
 export function tick(): Promise<void> {
   return wait(TICK_MS);

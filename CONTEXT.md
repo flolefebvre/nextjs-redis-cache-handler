@@ -61,8 +61,8 @@ _Avoid_: tag index, tag registry
 
 **Handler clock**:
 The clock every instant this handler compares is stamped on: one value per Key prefix, held in the tag slot,
-never below the last stamp issued and strictly increasing at each one, so that a backward step of the Redis
-host's wall clock cannot reorder an Entry and a tag event.
+never below the last stamp issued and never below the server's wall clock, so that a backward step of that wall
+clock cannot reorder an Entry and a tag event. Two stamps may share an instant; the tie drops the Entry.
 _Avoid_: logical clock, Lamport clock, Redis clock (that is `TIME`, the wall clock the Handler clock is floored
 by)
 

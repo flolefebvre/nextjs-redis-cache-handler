@@ -7,34 +7,52 @@ of its own while Entries live in slots the `{tags}` keys never share. A step bet
 event makes the event's instant precede a Write time that really came first, and `expiredAt > writeTime` then
 serves output the mutation replaced. So every instant this handler compares now comes from a **Handler clock**:
 `<keyPrefix>{tags}:clock`, one string holding the last stamp issued in milliseconds, in the slot the manifest
-and the log already share. A stamping script computes `max(TIME, last + 1)` and persists it, so stamps are
-strictly increasing and a tag event issued after an Entry write beats it whatever the wall clock did; the two
-reads of the manifest return `max(TIME, last)` and persist nothing. Under a backward step of S the clock freezes
-at the floor and advances a millisecond per stamp until the wall clock catches up, so it self-heals in S
-seconds; during the freeze an Entry generated after a tag event can be dropped one extra time, which is the side
-ADR 0002 already chooses — an Entry is dropped, never wrongly served.
+and the log already share. Every script computes `max(TIME, last)`; the stamping ones persist it when it moved
+the clock on, the two manifest reads persist nothing. The clock therefore never runs backwards, it never sits
+more than the last backward step ahead of wall time, and that excess shrinks to nothing as wall time catches up
+— so under a backward step of S it freezes at the floor for S seconds and self-heals, and whatever the load, it
+runs at time's rate.
 
-`set` therefore costs two round trips: a `tick` on the clock key, then the Entry write with
-`writeTime = stamp − age` computed by the Instance and passed in. `get` still costs one and issues no stamp, and
-`set` is off the request's critical path, which is what makes the second trip affordable; any delay between the
-two only makes the Entry look older, the safe side again. The split is also what keeps every script routable on
-Cluster: the tick touches the `{tags}` slot alone, the write the Entry's slot alone. The Entry write stays a Lua
-script rather than becoming a `MULTI` of `HSET` and `EXPIRE` — the same single round trip, one atomic unit, and
-nothing the client would have to grow for it — even though it no longer reads a clock.
+Two stamps can then share an instant, so the ordering is closed in the comparison instead: an event stamped on
+the very millisecond of a Write time counts as later than it, `staleAt >= writeTime` and `expiredAt >=
+writeTime`. The tie drops the Entry, which is the side ADR 0002 already chooses — an Entry is dropped, never
+wrongly served — and it is the only cost of the freeze, along with an Entry generated after a tag event being
+dropped one extra time while the clock stands still. The Instance's own projection of the clock never gives back
+time it has counted either: a frozen clock would otherwise come back identical from every refresh and the
+projection would stand still with it, holding past its due date an expiration a `durations` had scheduled. It
+keeps the later of the refresh and what it had counted on its monotonic clock, which leaves it at most one step
+ahead of the shared clock — ahead only ever drops an Entry sooner.
+
+`set` costs two round trips: a `tick` on the clock key, then the Entry write with `writeTime = stamp − age`
+computed by the Instance and passed in. `get` still costs one and issues no stamp, and `set` is off the
+request's critical path, which is what makes the second trip affordable; any delay between the two only makes
+the Entry look older, the safe side again. The split is also what keeps every script routable on Cluster: the
+tick touches the `{tags}` slot alone, the write the Entry's slot alone. The Entry write stays a Lua script
+rather than becoming a `MULTI` of `HSET` and `EXPIRE` — the same single round trip, one atomic unit, and nothing
+the client would have to grow for it — even though it no longer reads a clock.
+
+Pruning is the one place the clock's rate would meet the wall clock, and it is taken off the wall clock for
+that reason: an Entry key expires on `TIME`, so a cutoff of `TIME − maxTtl` states the invariant the write
+script keeps — no living Entry has a Write time older than the cutoff — with no condition on steps or load. The
+Handler clock is never below the wall clock, so a wall-clock cutoff is always the more conservative of the two.
+Both prunings use it: the shared one in the tag-event script, and the local one, which is why a refresh brings
+back the wall clock beside the stamp.
 
 Reads stay read-only for two reasons. One write per request per Instance is a permanent addition to the
-replication stream and the AOF, for a value nothing needs to be strictly increasing — the verdict only compares
-stamps that stamping scripts issued. And the case a read-only read leaves open is exactly the one the manifest's
-existing backward-step fallback covers: a read returns X = `TIME` while X > `last`, the wall clock then steps
-back by S, the next stamp lands at `max(TIME − S, last + 1)`, which can sit below the watermark X − 1 s; the
-following read then returns a `serverNow` below that watermark, `mergeWith` refuses to merge, and the full read
-that follows brings the event in. That fallback is load-bearing here, not vestigial, and it is also what a lost
-clock key — evicted, or dropped by a `FLUSHDB` — falls back on: the clock starts again from `TIME`, which makes
-fresh Entries look older than the events already recorded, so they are dropped rather than served.
+replication stream and the AOF, for a value only the stamping scripts need to record. And the case a read-only
+read leaves open is exactly the one the manifest's existing backward-step fallback covers: a read returns
+X = `TIME` while X > `last`, the wall clock then steps back by S, the next stamp lands at `max(TIME − S, last)`,
+which can sit below the watermark X − 1 s; the following read then returns a clock below that watermark,
+`mergeWith` refuses to merge, and the full read that follows brings the event in. That fallback is load-bearing
+here, not vestigial, and it is also what a lost clock key — evicted, or dropped by a `FLUSHDB` — falls back on:
+the clock starts again from `TIME`, which makes fresh Entries look older than the events already recorded, so
+they are dropped rather than served.
 
-Rejected: a continuous offset clock (`offset += last − TIME` on each step) — it never heals, and on a host that
-steps repeatedly the handler clock drifts away from the key-TTL clock without bound, which erodes the pruning
-invariant that no living Entry has a Write time older than the cutoff; stamping the Entry from the Instance's
-own projection `manifest.serverNow()`, which costs no round trip but advances while the Handler clock is frozen,
-so a concurrent tag event could still lose; a tolerance margin on the comparison, unbounded for the reason ADR
-0002 gives; and reading the clock key inside the Entry write script, which is cross-slot on Cluster.
+Rejected: a Lamport clock, `max(TIME, last + 1)` persisted at every stamp, which is what this decision first
+was. It breaks ties by construction, but it advances one millisecond per stamp rather than with time, so above
+a thousand stamps per second on one Key prefix it runs faster than the clock the Entry keys expire on, without
+bound while the load lasts, and it halves an `expire-after` under twice that load. Also rejected: a continuous
+offset clock (`offset += last − TIME` on each step), which never heals; stamping the Entry from the Instance's
+own projection, which costs no round trip but advances while the shared clock is frozen, so a concurrent tag
+event could still lose; a tolerance margin on the comparison, unbounded for the reason ADR 0002 gives; and
+reading the clock key inside the Entry write script, which is cross-slot on Cluster.

@@ -11,12 +11,22 @@ import {
 const NOW = 1787325433671;
 const MAX_TTL_MS = 2_592_000_000;
 
+const ELAPSED_MS = 5;
+
+/** How far a backward step of the server's wall clock leaves the Handler clock ahead of it. */
+const STEP_MS = 10_000;
+
 function states(entries: Record<string, TagState>): Map<string, TagState> {
   return new Map(Object.entries(entries));
 }
 
+/** Real time passing, which is what the local copy counts between two refreshes. */
+function elapse(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ELAPSED_MS));
+}
+
 test("a manifest value is the two instants the tag was last made Stale and Expired", () => {
-  const refresh = parseTagRefresh(["10", ["posts", "10:20", "post:1", "30:30"]]);
+  const refresh = parseTagRefresh(["10", "10", ["posts", "10:20", "post:1", "30:30"]]);
 
   expect(refresh.handlerNow).toBe(10);
   expect(refresh.states).toEqual(
@@ -27,20 +37,25 @@ test("a manifest value is the two instants the tag was last made Stale and Expir
 test("a manifest value that is not two numbers is dropped, the rest is kept", () => {
   const fields = ["ok", "1:2", "missing", "1", "empty", "", "words", "a:b", "extra", "1:2:3"];
 
-  expect(parseTagRefresh(["1", fields]).states).toEqual(
+  expect(parseTagRefresh(["1", "1", fields]).states).toEqual(
     states({ ok: { staleAt: 1, expiredAt: 2 } }),
   );
 });
 
 test("an empty manifest reads as an empty local copy", () => {
-  expect(parseTagRefresh(["1", []])).toEqual({ handlerNow: 1, states: new Map() });
+  expect(parseTagRefresh(["1", "1", []])).toEqual({
+    handlerNow: 1,
+    wallNow: 1,
+    states: new Map(),
+  });
 });
 
 test("a reply that is not a manifest is not decoded into an empty manifest", () => {
   expect(() => parseTagRefresh(undefined)).toThrow();
-  expect(() => parseTagRefresh(["1"])).toThrow();
-  expect(() => parseTagRefresh(["now", []])).toThrow();
-  expect(() => parseTagRefresh(["1", ["odd"]])).toThrow();
+  expect(() => parseTagRefresh(["1", "1"])).toThrow();
+  expect(() => parseTagRefresh(["now", "1", []])).toThrow();
+  expect(() => parseTagRefresh(["1", "wall", []])).toThrow();
+  expect(() => parseTagRefresh(["1", "1", ["odd"]])).toThrow();
 });
 
 test("no durations expires the tags now", () => {
@@ -96,8 +111,15 @@ test("a tag expired after the Entry was written makes it expired", () => {
 test("a tag expired before the Entry was written leaves it fresh", () => {
   const manifest = states({ posts: { staleAt: NOW, expiredAt: NOW } });
 
-  expect(tagVerdict(manifest, ["posts"], [], NOW, NOW)).toBe("fresh");
   expect(tagVerdict(manifest, ["posts"], [], NOW + 1, NOW)).toBe("fresh");
+});
+
+test("a tag event stamped on the very instant the Entry was written drops it", () => {
+  const expired = states({ posts: { staleAt: NOW, expiredAt: NOW } });
+  const stale = states({ posts: { staleAt: NOW, expiredAt: 0 } });
+
+  expect(tagVerdict(expired, ["posts"], [], NOW, NOW)).toBe("expired");
+  expect(tagVerdict(stale, ["posts"], [], NOW, NOW)).toBe("stale");
 });
 
 test("a tag whose expiration is still in the future does not expire the Entry yet", () => {
@@ -118,7 +140,7 @@ test("a tag made Stale after the Entry was written makes it Stale", () => {
   const manifest = states({ posts: { staleAt: NOW, expiredAt: NOW + 1000 } });
 
   expect(tagVerdict(manifest, ["posts"], [], NOW - 1, NOW)).toBe("stale");
-  expect(tagVerdict(manifest, ["posts"], [], NOW, NOW)).toBe("fresh");
+  expect(tagVerdict(manifest, ["posts"], [], NOW + 1, NOW)).toBe("fresh");
 });
 
 test("an expired tag wins over a Stale one, whichever order they come in", () => {
@@ -149,10 +171,12 @@ test("a refresh replaces the local copy wholesale", () => {
 
   manifest.replaceWith({
     handlerNow: NOW,
+    wallNow: NOW,
     states: states({ posts: { staleAt: NOW, expiredAt: NOW } }),
   });
   manifest.replaceWith({
     handlerNow: NOW + 5,
+    wallNow: NOW + 5,
     states: states({ other: { staleAt: 1, expiredAt: 2 } }),
   });
 
@@ -163,10 +187,21 @@ test("a refresh replaces the local copy wholesale", () => {
 test("the Handler clock the local copy answers on moves forward from the last refresh", () => {
   const manifest = createTagManifest(MAX_TTL_MS);
 
-  manifest.replaceWith({ handlerNow: NOW, states: states({}) });
+  manifest.replaceWith({ handlerNow: NOW, wallNow: NOW, states: states({}) });
 
   expect(manifest.handlerNow()).toBeGreaterThanOrEqual(NOW);
   expect(manifest.handlerNow()).toBeLessThan(NOW + 60_000);
+});
+
+test("a refresh bringing back a clock standing still gives back none of the time counted", async () => {
+  const manifest = createTagManifest(MAX_TTL_MS);
+  manifest.replaceWith({ handlerNow: NOW, wallNow: NOW, states: states({}) });
+  await elapse();
+
+  const counted = manifest.handlerNow() ?? 0;
+  manifest.mergeWith({ handlerNow: NOW, wallNow: NOW, states: states({}) });
+
+  expect(manifest.handlerNow()).toBeGreaterThanOrEqual(counted);
 });
 
 test("a local copy no refresh has landed in has no watermark to read from", () => {
@@ -176,6 +211,7 @@ test("a local copy no refresh has landed in has no watermark to read from", () =
   expect(
     manifest.mergeWith({
       handlerNow: NOW,
+      wallNow: NOW,
       states: states({ posts: { staleAt: 1, expiredAt: 2 } }),
     }),
   ).toBe(false);
@@ -185,7 +221,7 @@ test("a local copy no refresh has landed in has no watermark to read from", () =
 test("the next watermark read starts a second before the last refresh", () => {
   const manifest = createTagManifest(MAX_TTL_MS);
 
-  manifest.replaceWith({ handlerNow: NOW, states: states({}) });
+  manifest.replaceWith({ handlerNow: NOW, wallNow: NOW, states: states({}) });
 
   expect(manifest.since()).toBe(NOW - 1000);
 });
@@ -195,6 +231,7 @@ test("a merge overwrites the tags it brings back and leaves the others alone", (
 
   manifest.replaceWith({
     handlerNow: NOW,
+    wallNow: NOW,
     states: states({
       posts: { staleAt: NOW, expiredAt: 0 },
       other: { staleAt: NOW, expiredAt: 0 },
@@ -202,6 +239,7 @@ test("a merge overwrites the tags it brings back and leaves the others alone", (
   });
   const merged = manifest.mergeWith({
     handlerNow: NOW + 5,
+    wallNow: NOW + 5,
     states: states({ posts: { staleAt: NOW + 5, expiredAt: NOW + 5 } }),
   });
 
@@ -216,10 +254,12 @@ test("a refresh whose clock is behind the watermark is refused and changes nothi
 
   manifest.replaceWith({
     handlerNow: NOW,
+    wallNow: NOW,
     states: states({ posts: { staleAt: NOW, expiredAt: NOW } }),
   });
   const merged = manifest.mergeWith({
     handlerNow: NOW - 1,
+    wallNow: NOW - 1,
     states: states({ posts: { staleAt: 1, expiredAt: 1 } }),
   });
 
@@ -233,12 +273,13 @@ test("a merge drops the tags no living Entry can be affected by any more", () =>
 
   manifest.replaceWith({
     handlerNow: NOW,
+    wallNow: NOW,
     states: states({
       old: { staleAt: NOW - MAX_TTL_MS - 1, expiredAt: NOW - MAX_TTL_MS - 1 },
       never: { staleAt: NOW - MAX_TTL_MS - 1, expiredAt: 0 },
     }),
   });
-  manifest.mergeWith({ handlerNow: NOW, states: states({}) });
+  manifest.mergeWith({ handlerNow: NOW, wallNow: NOW, states: states({}) });
 
   expect(manifest.verdictFor(["old"], [], NOW - MAX_TTL_MS - 2)).toBe("fresh");
   expect(manifest.verdictFor(["never"], [], NOW - MAX_TTL_MS - 2)).toBe("fresh");
@@ -249,18 +290,32 @@ test("a merge keeps a tag whose expiration has not fallen behind maxTtl yet", ()
 
   manifest.replaceWith({
     handlerNow: NOW,
+    wallNow: NOW,
     states: states({ posts: { staleAt: NOW - MAX_TTL_MS - 1, expiredAt: NOW } }),
   });
-  manifest.mergeWith({ handlerNow: NOW, states: states({}) });
+  manifest.mergeWith({ handlerNow: NOW, wallNow: NOW, states: states({}) });
 
   expect(manifest.verdictFor(["posts"], [], NOW - MAX_TTL_MS - 2)).toBe("expired");
+});
+
+test("a merge prunes on the server's wall clock, not on a Handler clock ahead of it", () => {
+  const manifest = createTagManifest(MAX_TTL_MS);
+
+  manifest.replaceWith({
+    handlerNow: NOW,
+    wallNow: NOW,
+    states: states({ posts: { staleAt: NOW - MAX_TTL_MS + 10, expiredAt: 0 } }),
+  });
+  manifest.mergeWith({ handlerNow: NOW + STEP_MS, wallNow: NOW, states: states({}) });
+
+  expect(manifest.verdictFor(["posts"], [], NOW - MAX_TTL_MS + 9)).toBe("stale");
 });
 
 test("the Handler clock the local copy answers on moves on with a merge too", () => {
   const manifest = createTagManifest(MAX_TTL_MS);
 
-  manifest.replaceWith({ handlerNow: NOW, states: states({}) });
-  manifest.mergeWith({ handlerNow: NOW + 60_000, states: states({}) });
+  manifest.replaceWith({ handlerNow: NOW, wallNow: NOW, states: states({}) });
+  manifest.mergeWith({ handlerNow: NOW + 60_000, wallNow: NOW + 60_000, states: states({}) });
 
   expect(manifest.handlerNow()).toBeGreaterThanOrEqual(NOW + 60_000);
 });

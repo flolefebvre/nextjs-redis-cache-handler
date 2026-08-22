@@ -6,6 +6,7 @@ import {
   handlerClock,
   handlerFor,
   seedHandlerClock,
+  seedTagEvents,
   serverClient,
   serverNow,
   type ServerClient,
@@ -54,7 +55,7 @@ test("an Entry that took a while to generate is stamped that far before the cloc
   expect(writeTime).toBeGreaterThan(clock - AGE_MS - CLOCK_MARGIN_MS);
 });
 
-test("every stamp the Handler clock issues is later than the one before it", async () => {
+test("no stamp the Handler clock issues is earlier than the one before it", async () => {
   const { keyPrefix, handler, server } = await store();
 
   await handler.set("one", Promise.resolve(entryOf()));
@@ -64,8 +65,8 @@ test("every stamp the Handler clock issues is later than the one before it", asy
   await handler.set("three", Promise.resolve(entryOf()));
   const third = await handlerClock(server, keyPrefix);
 
-  expect(second).toBeGreaterThan(first ?? 0);
-  expect(third).toBeGreaterThan(second ?? 0);
+  expect(second).toBeGreaterThanOrEqual(first ?? 0);
+  expect(third).toBeGreaterThanOrEqual(second ?? 0);
 });
 
 test("a tag event issued while the wall clock sits behind the Handler clock is stamped ahead of it", async () => {
@@ -74,7 +75,7 @@ test("a tag event issued while the wall clock sits behind the Handler clock is s
   await handler.updateTags(["posts"]);
 
   const [staleAt] = String(await server.hGet(tagKeys(keyPrefix).manifest, "posts")).split(":");
-  expect(Number(staleAt)).toBeGreaterThan(stepped);
+  expect(Number(staleAt)).toBe(stepped);
 });
 
 test("an Entry written while the wall clock sits behind the Handler clock is stamped ahead of it", async () => {
@@ -102,7 +103,7 @@ test("an Entry invalidated after the wall clock stepped back is dropped, not ser
   expect(await handler.get("posts", [])).toBeUndefined();
 });
 
-test("a tag event stamped after an Entry is later than it, whatever the wall clock did", async () => {
+test("a tag event stamped after an Entry is never earlier than it, whatever the wall clock did", async () => {
   const { keyPrefix, handler, server } = await steppedStore();
 
   await handler.set("posts", Promise.resolve(entryOf({ tags: ["posts"], timestamp: Date.now() })));
@@ -110,7 +111,18 @@ test("a tag event stamped after an Entry is later than it, whatever the wall clo
   await handler.updateTags(["posts"]);
   const invalidated = await handlerClock(server, keyPrefix);
 
-  expect(invalidated).toBeGreaterThan(written ?? 0);
+  expect(invalidated).toBeGreaterThanOrEqual(written ?? 0);
+});
+
+test("an Entry whose Write time is the very instant of the tag event is dropped", async () => {
+  const { keyPrefix, handler, server } = await store();
+  await handler.set("posts", Promise.resolve(entryOf({ tags: ["posts"] })));
+  const writeTime = await writeTimeOf(server, keyPrefix, "posts");
+
+  await seedTagEvents(server, keyPrefix, ["posts"], writeTime, writeTime);
+  await handler.refreshTags();
+
+  expect(await handler.get("posts", [])).toBeUndefined();
 });
 
 test("a refresh reads the Handler clock and issues no stamp of its own", async () => {

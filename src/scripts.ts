@@ -5,37 +5,39 @@ import { parseStamp } from "./handler-clock.js";
 import { parseTagRefresh, type TagRefresh } from "./tag-manifest.js";
 import type { Timestamp } from "./types.js";
 
-const WALL_NOW = `
+const HANDLER_NOW = `
 local clock = redis.call('TIME')
 local wallNow = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
-local function handlerNow(key, step)
+local function handlerNow(key)
   local last = tonumber(redis.call('GET', key)) or 0
-  return math.max(wallNow, last + step)
+  if wallNow > last then return wallNow, true end
+  return last, false
 end
 `;
 
 /**
  * The Lua that issues one stamp of the Handler clock: the wall clock, floored by the last
- * stamp the key holds, and never equal to it. The new stamp is persisted, so two stamps
- * are never the same instant and a tag event issued after an Entry write always beats it,
- * even while the wall clock sits behind the floor (ADR 0003).
+ * stamp the key holds, and persisted whenever it moved the clock on. A stamp taken while
+ * the wall clock sits behind that floor writes nothing — the value is already there, and a
+ * `SET` of it would be replication traffic for an unchanged key (ADR 0003).
  */
 function stamp(clockKey: string): string {
-  return `${WALL_NOW}
-local now = handlerNow(${clockKey}, 1)
-redis.call('SET', ${clockKey}, string.format('%d', now))
+  return `${HANDLER_NOW}
+local now, ahead = handlerNow(${clockKey})
+if ahead then redis.call('SET', ${clockKey}, string.format('%d', now)) end
 `;
 }
 
 /**
- * The Lua that reads the Handler clock without issuing a stamp: the wall clock, floored
- * by the last stamp. It persists nothing — a read runs on every request of every Instance
- * and nothing needs its value to be strictly increasing, so making it a write would put
- * one write per request into the replication stream and the AOF for good (ADR 0003).
+ * The Lua that reads the Handler clock without issuing a stamp: the same value, persisted
+ * by nobody. A read runs on every request of every Instance, and the verdict it feeds
+ * compares stamps that the stamping scripts issued — so a read has nothing to record, and
+ * recording it would put one write per request into the replication stream and the AOF for
+ * good (ADR 0003).
  */
 function readClock(clockKey: string): string {
-  return `${WALL_NOW}
-local now = handlerNow(${clockKey}, 0)
+  return `${HANDLER_NOW}
+local now = handlerNow(${clockKey})
 `;
 }
 
@@ -71,7 +73,7 @@ for index = 4, #ARGV do
   redis.call('HSET', KEYS[1], tag, string.format('%d', now) .. ':' .. string.format('%d', expiredAt))
   redis.call('ZADD', KEYS[2], now, tag)
 end
-local cutoff = now - maxTtl
+local cutoff = wallNow - maxTtl
 local batch = redis.call('ZRANGE', KEYS[2], '-inf', string.format('%d', cutoff), 'BYSCORE', 'LIMIT', 0, ${PRUNE_BATCH})
 for index = 1, #batch do
   local tag = batch[index]
@@ -103,12 +105,12 @@ for start = 1, #tags, ${HMGET_CHUNK} do
     end
   end
 end
-return { string.format('%d', now), fields }
+return { string.format('%d', now), string.format('%d', wallNow), fields }
 `;
 
 const READ_TAG_MANIFEST = `
 ${readClock("KEYS[2]")}
-return { string.format('%d', now), redis.call('HGETALL', KEYS[1]) }
+return { string.format('%d', now), string.format('%d', wallNow), redis.call('HGETALL', KEYS[1]) }
 `;
 
 const WRITE_ENTRY = `
@@ -154,7 +156,8 @@ function defineCacheScript<Reply>(
 
 /**
  * One stamp of the Handler clock, the single source of every instant this handler
- * compares (ADR 0003): `max(TIME, last + 1)` in milliseconds, persisted and returned.
+ * compares (ADR 0003): `max(TIME, last)` in milliseconds, persisted when it moved the
+ * clock on, and returned.
  *
  * It touches the clock key and nothing else, so it is routable on Cluster on its own,
  * and it is the first of the two round trips a `set` makes: the Entry write that follows
@@ -201,7 +204,9 @@ export const writeEntryScript: CacheScript<void> = defineCacheScript(
  * Expired keeps `expiredAt` at `0`, which no Entry can ever be older than, so that a
  * profile without an `expire` marks the tag Stale and nothing more.
  *
- * Pruning drops the events older than `maxTtl`, on the invariant the write script keeps:
+ * Pruning drops the events older than `maxTtl` of the server's wall clock — the clock the
+ * Entry keys expire on, and one the Handler clock is never below — on the invariant the
+ * write script keeps:
  * no Entry outlives `min(expire, maxTtl)` counted from its Write time, so no living Entry
  * has a Write time older than the cutoff and no dropped event can still be the verdict on
  * one. Pruning walks at most one batch of the oldest log members per call, and re-adds at the
@@ -222,10 +227,11 @@ export const updateTagsScript: CacheScript<void> = defineCacheScript(
 );
 
 /**
- * The full read of the Tag manifest: the whole hash and the Handler clock it was read at,
- * in one round trip. `HGETALL` alone would leave the comparison in `get` without a clock
- * to compare against, and reading the clock separately would be a second round trip on a
- * value that must match the manifest it is used with. The read issues no stamp (ADR 0003).
+ * The full read of the Tag manifest: the whole hash, the Handler clock it was read at and
+ * the server's wall clock, in one round trip. `HGETALL` alone would leave the comparison in
+ * `get` without a clock to compare against, and reading the clock separately would be a
+ * second round trip on a value that must match the manifest it is used with. The read
+ * issues no stamp (ADR 0003).
  *
  * Keys: the Tag manifest hash and the Handler clock. No arguments.
  */
@@ -236,8 +242,9 @@ export const readTagManifestScript: CacheScript<TagRefresh> = defineCacheScript(
 );
 
 /**
- * The incremental read of the Tag manifest: the Handler clock, the log members written
- * since the caller's watermark, and their manifest values, in one round trip. Its cost
+ * The incremental read of the Tag manifest: the Handler clock, the server's wall clock,
+ * the log members written since the caller's watermark, and their manifest values, in one
+ * round trip. Its cost
  * is that of the events since the last read, whatever the size of the manifest, where a
  * full read grows with the manifest and stalls the server for every Instance.
  *

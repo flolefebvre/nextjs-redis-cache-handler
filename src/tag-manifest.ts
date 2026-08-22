@@ -20,9 +20,15 @@ export interface TagState {
   expiredAt: Timestamp;
 }
 
-/** What one refresh of the Tag manifest brings back: the Handler clock and the tags to apply. */
+/**
+ * What one refresh of the Tag manifest brings back: the tags to apply and the two clocks
+ * they are read against. The Handler clock is what every stamp is compared on; the wall
+ * clock comes back beside it because the Entry keys expire on that one, and it is the
+ * cutoff the events no living Entry can be affected by are dropped at (ADR 0003).
+ */
 export interface TagRefresh {
   handlerNow: Timestamp;
+  wallNow: Timestamp;
   states: Map<string, TagState>;
 }
 
@@ -43,11 +49,12 @@ export interface TagDurations {
  * instead of behaving as if every tag were untouched.
  */
 export function parseTagRefresh(reply: unknown): TagRefresh {
-  if (!Array.isArray(reply) || reply.length !== 2) throw new Error(BAD_REPLY);
+  if (!Array.isArray(reply) || reply.length !== 3) throw new Error(BAD_REPLY);
 
   const handlerNow = Number(reply[0]);
-  const fields: unknown = reply[1];
-  if (!Number.isFinite(handlerNow)) throw new Error(BAD_REPLY);
+  const wallNow = Number(reply[1]);
+  const fields: unknown = reply[2];
+  if (!Number.isFinite(handlerNow) || !Number.isFinite(wallNow)) throw new Error(BAD_REPLY);
   if (!Array.isArray(fields) || fields.length % 2 !== 0) throw new Error(BAD_REPLY);
 
   const states = new Map<string, TagState>();
@@ -56,7 +63,7 @@ export function parseTagRefresh(reply: unknown): TagRefresh {
     if (state !== undefined) states.set(String(fields[index]), state);
   }
 
-  return { handlerNow, states };
+  return { handlerNow, wallNow, states };
 }
 
 function parseTagState(value: string): TagState | undefined {
@@ -92,6 +99,11 @@ export function encodeTagDurations(durations: { expire?: number } | undefined): 
  * A tag expired since the Entry was written drops it; a tag made Stale since then has it
  * served once more while the wrapper regenerates it. An expired tag wins over a Stale one,
  * so every tag is looked at before a Stale verdict is returned.
+ *
+ * An event stamped on the very millisecond of the Write time counts as later than it: the
+ * Handler clock advances with time and not with the number of stamps taken (ADR 0003), so
+ * two of them can share an instant, and the tie goes to the event — the side that drops an
+ * Entry rather than serving output a mutation replaced.
  */
 export function tagVerdict(
   states: Map<string, TagState>,
@@ -106,8 +118,8 @@ export function tagVerdict(
     const state = states.get(tag);
     if (state === undefined) continue;
 
-    if (state.expiredAt <= handlerNow && state.expiredAt > writeTime) return "expired";
-    if (state.staleAt > writeTime) stale = true;
+    if (state.expiredAt <= handlerNow && state.expiredAt >= writeTime) return "expired";
+    if (state.staleAt >= writeTime) stale = true;
   }
 
   return stale ? "stale" : "fresh";
@@ -140,6 +152,13 @@ export interface TagManifest {
    * The Handler clock as of now, or `undefined` while no refresh has landed in this
    * process. It is the last refresh's instant plus the time elapsed since, measured on a
    * monotonic clock so that a step of the app's clock cannot move it.
+   *
+   * A refresh never takes back time already counted: while the shared clock is frozen at
+   * its floor — the whole of a backward step of the Redis host's wall clock (ADR 0003) —
+   * every refresh would otherwise bring the same instant back and this copy would stop
+   * advancing, holding a tag expiration that was due meanwhile. The copy therefore keeps
+   * the later of the two, which puts it at most one step ahead of the shared clock, and
+   * being ahead only ever drops an Entry sooner.
    */
   handlerNow(): Timestamp | undefined;
   /** What the local copy says about an Entry; the caller has checked `handlerNow` first. */
@@ -166,7 +185,11 @@ export function createTagManifest(maxTtlMs: number): TagManifest {
   }
 
   function anchorOn(refresh: TagRefresh): void {
-    anchor = { handlerNow: refresh.handlerNow, elapsedFrom: performance.now() };
+    const counted = handlerNow() ?? 0;
+    anchor = {
+      handlerNow: Math.max(refresh.handlerNow, counted),
+      elapsedFrom: performance.now(),
+    };
     watermark = refresh.handlerNow;
   }
 
@@ -179,7 +202,7 @@ export function createTagManifest(maxTtlMs: number): TagManifest {
       if (watermark === undefined || refresh.handlerNow < watermark) return false;
 
       for (const [tag, state] of refresh.states) states.set(tag, state);
-      prune(states, refresh.handlerNow - maxTtlMs);
+      prune(states, refresh.wallNow - maxTtlMs);
       anchorOn(refresh);
 
       return true;
@@ -200,7 +223,8 @@ export function createTagManifest(maxTtlMs: number): TagManifest {
 
 /**
  * Drop the tags whose last event is older than the cutoff and whose expiration is older
- * than it too, the rule the write script prunes the shared copy by. `expiredAt` at `0`
+ * than it too, the rule the write script prunes the shared copy by — the cutoff being on
+ * the server's wall clock, the one the Entry keys expire on (ADR 0003). `expiredAt` at `0`
  * ("never made Expired") is always older than the cutoff, and so are all its Entries.
  *
  * Such a tag can only ever have dropped an Entry written before the cutoff, and no Entry
