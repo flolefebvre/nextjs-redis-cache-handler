@@ -1,0 +1,67 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Lets a release workflow run this exact gate, so the release path and the everyday
+  # path can never drift apart.
+  workflow_call:
+
+# Cancel superseded runs, except on main, where every push keeps its run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Before Setup Node, which needs pnpm on the PATH to cache its store. The repo
+      # has no `packageManager` pin, so the major is named here.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The `gate` line in package.json, one step each so a failure names itself. Add a
+      # check in both.
+      - name: Format
+        run: pnpm format:check
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Duplication
+        run: pnpm duplication
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # Needs the runner's Docker daemon: the integration project starts its own
+      # throwaway Valkey.
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Packed contents
+        run: pnpm pack:check
+
+      - name: Typecheck the built output
+        run: pnpm typecheck:dist

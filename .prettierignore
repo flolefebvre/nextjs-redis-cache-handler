@@ -2,3 +2,5 @@ dist
 node_modules
 pnpm-lock.yaml
 coverage
+docs/nextjs-caching.md
+docs/research
