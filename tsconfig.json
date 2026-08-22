@@ -5,6 +5,9 @@
     "types": ["node"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "paths": {
+      "@flefebvre/nextjs-redis-cache-handler/handler-target": ["./src/handler.node.ts"]
+    },
     "outDir": "dist",
     "declaration": true,
     "declarationMap": true,

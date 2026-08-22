@@ -427,9 +427,39 @@ it in the root-params joiner path (`:405-411`, `:2063-2077`).
   static-generation worker**, and the forked `next dev` server, where reads go
   through an in-memory tiered front (50 MB) before reaching the custom
   handler. Connect to Redis lazily.
-- Edge runtime routes bundle the handler statically; the module must be
-  bundleable if any route uses `runtime = 'edge'` **[source]**
-  `dist/build/webpack/loaders/next-edge-ssr-loader/index.js:40-53`.
+- Edge-bundled routes bundle the handler statically: the loader emits
+  `import edgeCacheHandler_N from "<handlerPath>"` for every `cacheHandlers`
+  entry, so an entry that reaches `redis` — hence `node:net`, `node:tls`,
+  `node:crypto` — fails the build **[source]**
+  `dist/build/webpack/loaders/next-edge-ssr-loader/index.js:39-57`,
+  `dist/build/webpack/loaders/next-edge-app-route-loader/index.js:16-36`.
+  Measured on 16.3.2, both bundlers: webpack fails to compile
+  (`Can't resolve 'stream'`, `UnhandledSchemeError: node:url`), Turbopack
+  compiles and then fails collecting page data
+  (`Cannot find module 'node:crypto'`).
+- Which routes are Edge-bundled, with `cacheComponents: true`, is narrower than
+  it looks. An **app**-router `export const runtime = 'edge'` is rejected
+  outright — `Route segment config "runtime" is not compatible with
+  nextConfig.cacheComponents` — so the reachable case is the **pages** router:
+  `export const config = { runtime: 'experimental-edge' }` on a page goes
+  through `next-edge-ssr-loader` and pulls the handler in. A pages **API**
+  route (`next-edge-function-loader`) and `middleware.ts`
+  (`next-middleware-loader`) inject no `cacheHandlers`.
+- The `edge-light` condition (`edgeConditionName` in
+  `dist/build/webpack-config-rules/resolve.js`) is honoured by **both**
+  bundlers, but only for **bare specifiers**. Neither registration form is
+  one: `handlerPath` and `require.resolve('…/handler')` are filesystem paths,
+  and the loader's `contextifyImportPath` turns them into a relative file
+  import, for which no condition is consulted. A **package self-reference**
+  is the way back into the `exports` map: `dist/handler.js` is a re-export of
+  `@flefebvre/nextjs-redis-cache-handler/handler-target`, an internal subpath
+  whose `edge-light` condition names the Edge target. A user's own handler
+  module importing `@flefebvre/nextjs-redis-cache-handler` is a bare specifier
+  already, and `.` carries the condition directly.
+- Do not derive a path from `import.meta.url` in a module that can reach an
+  Edge bundle. Measured on 16.3.2: webpack yields a `blob:` URL, and Turbopack
+  emits the imported file into `.next/static/media/` as a client asset,
+  dragging the Node.js target and its `redis` import into the client output.
 - `cacheMaxMemorySize` is not passed to custom handlers; it only sizes the
   built-in LRU and the `IncrementalCache` memory tier.
 

@@ -14,6 +14,7 @@ interface Smoke {
   what: string;
   file: string;
   url?: string;
+  conditions?: string;
   expected: RegExp | "";
 }
 
@@ -26,6 +27,13 @@ const SMOKES: Smoke[] = [
     expected: "",
   },
   { what: "the entry with no REDIS_URL", file: "smoke.mjs", expected: /^[^\n]*REDIS_URL[^\n]*\n$/ },
+  {
+    what: "both entries under the edge-light condition",
+    file: "smoke.edge.mjs",
+    url: NO_SERVER_THERE,
+    conditions: "edge-light",
+    expected: /Edge runtime is not supported/,
+  },
 ];
 
 /** The environment one smoke runs in: this one, with `REDIS_URL` set or taken out. */
@@ -43,7 +51,11 @@ const fail = (message: string): never => {
 };
 
 for (const smoke of SMOKES) {
-  const { status, signal, stderr, stdout } = spawnSync(process.execPath, [smoke.file], {
+  const argv =
+    smoke.conditions === undefined
+      ? [smoke.file]
+      : [`--conditions=${smoke.conditions}`, smoke.file];
+  const { status, signal, stderr, stdout } = spawnSync(process.execPath, argv, {
     cwd: CONSUMER,
     encoding: "utf-8",
     timeout: TIMEOUT_MS,
