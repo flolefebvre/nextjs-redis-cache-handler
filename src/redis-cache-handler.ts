@@ -45,6 +45,19 @@ type ReadOutcome =
  * is slow, serving an Entry a mutation has already dropped is wrong. `updateTags` does
  * reject, so that a lost invalidation fails the Server Action visibly.
  *
+ * `operationTimeout` bounds every one of them, the wait on the connection included, so
+ * that a store that stopped answering makes the app slower and never blocks it. A `get`
+ * that ran out of time is a miss `timeout` and one that failed for any other reason,
+ * a client with no connection first among them, is a miss `unavailable`; a `set` and a
+ * `refreshTags` past their deadline give up, the refresh keeping the manifest it had
+ * rather than applying a read that came back late. Every one of them reports through
+ * `onError` with its own operation, and a connection-level failure through `op:
+ * 'connect'`.
+ *
+ * Giving up is not cancelling: a write that ran out of time may still reach the store
+ * afterwards, and lands there with the Write time it was given, which is the one a tag
+ * event is compared against.
+ *
  * A `refreshTags` reads only the tag events written since the last one, so its cost does
  * not grow with the number of tags an app has ever revalidated. The whole Tag manifest is
  * read again on the first call of the process, on the first call after the client
