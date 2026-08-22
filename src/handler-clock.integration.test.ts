@@ -31,6 +31,13 @@ const CLOCK_MARGIN_MS = 5_000;
  */
 const STEP_MS = 10_000;
 
+/**
+ * How long the render of the Entry a held clock drops took: any length at all, as long as
+ * it is shorter than the step the clock is held by, since a render of that length is what
+ * puts the Write time below a tag event stamped at the same floor.
+ */
+const RENDER_MS = 100;
+
 test("the first Entry of a store starts the Handler clock and is stamped from it", async () => {
   const { keyPrefix, handler, server } = await store();
 
@@ -123,6 +130,19 @@ test("an Entry whose Write time is the very instant of the tag event is dropped"
   await handler.refreshTags();
 
   expect(await handler.get("posts", [])).toBeUndefined();
+});
+
+test("an Entry whose render started after a tag event of the same hold is dropped", async () => {
+  const { handler } = await steppedStore();
+  await handler.updateTags(["posts"]);
+
+  await handler.set(
+    "slow",
+    Promise.resolve(entryOf({ tags: ["posts"], timestamp: Date.now() - RENDER_MS })),
+  );
+  await handler.refreshTags();
+
+  expect(await handler.get("slow", [])).toBeUndefined();
 });
 
 test("a refresh reads the Handler clock and issues no stamp of its own", async () => {
