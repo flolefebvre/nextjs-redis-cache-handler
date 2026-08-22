@@ -15,11 +15,14 @@ export interface RedisCacheHandlerOptions {
    */
   url?: string;
   /**
-   * A node-redis client the caller created and owns: the escape hatch for TLS
-   * certificates, Sentinel, Cluster or a custom reconnect policy. It is used exactly as
-   * given — never connected, never quit, and `close()` leaves it open — so the caller
-   * connects it and tunes it themselves. Exclusive with `url`: exactly one of the two is
-   * required.
+   * A standalone node-redis client the caller created and owns, whatever its RESP
+   * version, its TLS socket or its own tuning: the escape hatch for a connection this
+   * library's own options cannot express. It is used exactly as given — never connected,
+   * never quit, and `close()` leaves it open — so the caller connects it and tunes it
+   * themselves. Exclusive with `url`: exactly one of the two is required.
+   *
+   * A Cluster or Sentinel client is not accepted yet: node-redis gives those a different
+   * `sendCommand` signature, so they do not satisfy `CacheClient`.
    */
   client?: CacheClient;
   /**
@@ -80,6 +83,8 @@ export const DEFAULT_OPERATION_TIMEOUT = 1_000;
 export const DEFAULT_UPDATE_TAGS_TIMEOUT = 5_000;
 
 const URL_PROTOCOLS = ["redis:", "rediss:"];
+
+const CLIENT_METHODS = ["withTypeMapping", "on", "off"];
 
 const KNOWN_OPTIONS = [
   "url",
@@ -184,11 +189,15 @@ function protocolOf(value: string): string {
 }
 
 function redisClient(value: unknown): CacheClient {
-  if (typeof value === "object" && value !== null && "withTypeMapping" in value) {
-    return value as CacheClient;
+  if (isRecord(value) && CLIENT_METHODS.every((method) => typeof value[method] === "function")) {
+    return value as unknown as CacheClient;
   }
 
   throw new Error("`client` must be a node-redis client");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function nonEmptyString(value: unknown, option: string, fallback: string): string {

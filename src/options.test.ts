@@ -108,6 +108,11 @@ test.for([
 test.for([
   ["a client that is not an object", { client: "my-client" }],
   ["a client without the commands the handler needs", { client: {} }],
+  ["a client whose `withTypeMapping` is not callable", { client: { withTypeMapping: true } }],
+  [
+    "a client that cannot be listened to",
+    { client: { withTypeMapping: () => undefined, on: () => undefined } },
+  ],
 ])("%s is an error naming `client`", ([, options]) => {
   expect(resolving(options)).toThrowError("`client` must be a node-redis client");
 });
