@@ -14,6 +14,12 @@ const BACKOFF_CAP = 80;
 
 const MARGIN = 120;
 
+/**
+ * How early a timer may fire, measured against the monotonic clock: Node's event loop
+ * keeps its time in whole milliseconds, so a pause of `n` ms can read as a hair under it.
+ */
+const TIMER_SLACK = 1;
+
 const WRITTEN = "written";
 
 const SHORT_BUDGET = 1;
@@ -202,7 +208,7 @@ describe("withRetries", () => {
     const gaps = attempts.gaps();
     expect(gaps.length).toBeGreaterThanOrEqual(3);
     expect(gaps.at(0) ?? 0).toBeLessThan(BACKOFF * 2);
-    expect(gaps.at(1) ?? 0).toBeGreaterThanOrEqual(BACKOFF * 2);
+    expect(gaps.at(1) ?? 0).toBeGreaterThanOrEqual(BACKOFF * 2 - TIMER_SLACK);
     expect(Math.max(...gaps)).toBeLessThan(BACKOFF_CAP + MARGIN);
   });
 });
