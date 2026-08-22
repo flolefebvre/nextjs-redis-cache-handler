@@ -41,16 +41,36 @@ tags **[source]** `dist/server/revalidation-utils.js:127-136`.
 
 **The multi-instance consequence.** A statically prerendered route (a page
 whose whole output is cacheable, `○` in the build summary) is served from the
-ISR copy of its HTML and never calls `cacheHandlers` at serve time
+ISR cache's copy of its HTML and never calls `cacheHandlers` at serve time
 (`x-nextjs-cache: HIT`, `x-nextjs-prerender: 1`). The `incrementalCache`
 half of the fan-out only reaches the instance that ran the revalidation API,
 so after `updateTag()` on instance A, instance B keeps serving its old HTML
-until something revalidates on B **[measured]**. The `'use cache'` Entries
-underneath *do* propagate (B's eventual re-render hit A's fresh Entry); only
-the page shell is per-instance. Dynamic / PPR routes (a `<Suspense>` boundary
-whose content depends on request data) read their Entries on every request
-and see propagation immediately. Sharing the ISR copy is the singular
-`cacheHandler`'s job, outside this document.
+**[measured]** until either a revalidation API runs on B, or B's copy passes
+its ISR `revalidate` window. That window is not indefinite: `next build`
+sets the route's `initialRevalidateSeconds` to the minimum `cacheLife`
+`revalidate` of the Entries the prerender used (default profile: 900 s), and
+once past it B serves the stale copy one more time and regenerates it in the
+background from the shared Entries **[source]** `use-cache-wrapper.js:551-567`
+(`propagateCacheLifeAndTagsToRevalidateStore`: union of tags, min of
+`revalidate`/`expire`/`stale`), `dist/build/index.js:1942-1957`
+(`getCacheControl`), `dist/server/response-cache/index.js` (`isStale === true`
+serves stale and revalidates; `-1` blocks). Staleness on B is therefore
+bounded by the route's `revalidate`, unbounded only when every Entry is
+`revalidate: false` (`INFINITE_CACHE`); the `max` profile is 30 days. The
+`'use cache'` Entries underneath *do* propagate (B's eventual re-render hit
+A's fresh Entry); only the page shell is per-instance. Dynamic / PPR routes
+(a `<Suspense>` boundary whose content depends on request data) read their
+Entries on every request and see propagation immediately; in a PPR route this
+holds for Entries used inside the dynamic hole, while its static shell is an
+ISR copy like any prerendered route **[unverified]**. Sharing the ISR cache is
+the singular `cacheHandler`'s job, outside this document and this library;
+Next.js documents the per-instance behaviour itself **[docs]**
+`incremental-static-regeneration.md` ("Multi-instance"), `self-hosting.md`
+("Configuring Caching"), `deploying-to-platforms.md` (`cacheHandler` for ISR,
+`cacheHandlers` for `'use cache'`). A custom singular handler is not seeded by
+`next build` either: pages are written to `.next/server/app` and only the
+built-in `FileSystemCache.get` reads them as seed data **[source]**
+`dist/export/routes/app-page.js`, `dist/server/lib/incremental-cache/index.js`.
 
 ## The `CacheHandler` contract in one table
 
