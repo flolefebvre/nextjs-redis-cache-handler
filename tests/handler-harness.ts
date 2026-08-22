@@ -7,6 +7,12 @@ import type { RedisCacheHandlerOptions } from "../src/options.js";
 import { createRedisCacheHandler } from "../src/redis-cache-handler.js";
 import type { CacheEntry, CacheHandler } from "../src/types.js";
 
+const TICK_MS = 5;
+
+const SETTLE_TIMEOUT_MS = 5_000;
+
+const ARGUMENT = /"((?:[^"\\]|\\.)*)"/g;
+
 /** A value with bytes no UTF-8 decoder would give back, as an RSC payload has. */
 export const VALUE = Uint8Array.from([0x00, 0xff, 0xfe, 0x80, 0x01, 0xc3, 0x28]);
 
@@ -93,13 +99,18 @@ export async function bytesOf(stream: ReadableStream<Uint8Array>): Promise<Uint8
   return Uint8Array.from(Buffer.concat(chunks));
 }
 
+/** A real pause of `ms` milliseconds. */
+export function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * A real pause long enough for the server clock to move on. Tag events and Write times
  * are compared strictly, so a test that means "before" must not land on the same
  * millisecond.
  */
 export function tick(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 5));
+  return wait(TICK_MS);
 }
 
 /** An Entry as Next.js would hand it to `set`, with the given overrides. */
@@ -148,4 +159,61 @@ export function timingsOf(entry: CacheEntry): Omit<CacheEntry, "value"> {
     expire: entry.expire,
     revalidate: entry.revalidate,
   };
+}
+
+/** What the server ran, as `MONITOR` reported it: one array of arguments per command. */
+export interface CommandStream {
+  /**
+   * Every command the server has run on this Key prefix since the stream was opened.
+   * A marker command is sent and awaited first, so that everything the server ran before
+   * this call has reached the stream.
+   */
+  settled(): Promise<string[][]>;
+}
+
+/**
+ * Watch what the server runs on one Key prefix, on a connection of its own. `MONITOR`
+ * reports the commands a Lua script runs as well as the `EVALSHA` that started it, so a
+ * read of the Tag manifest shows up as both. The stream is global, so only the commands
+ * carrying this test's Key prefix are kept: a command with no key of ours in it, `TIME`
+ * among them, cannot be told from another test's.
+ */
+export async function commandStream(keyPrefix: string): Promise<CommandStream> {
+  const commands: string[][] = [];
+  const monitor = createClient({ url: inject("redisUrl") });
+  monitor.on("error", () => undefined);
+  await monitor.connect();
+  onTestFinished(() => monitor.close());
+  await monitor.monitor((line) => {
+    const command = argumentsOf(String(line));
+    if (command.some((argument) => argument.includes(keyPrefix))) commands.push(command);
+  });
+  const marker = await serverClient();
+
+  return {
+    async settled(): Promise<string[][]> {
+      const token = `${keyPrefix}settled:${randomUUID()}`;
+      const seen = (): boolean => commands.some((command) => command.includes(token));
+      await marker.echo(token);
+
+      const deadline = Date.now() + SETTLE_TIMEOUT_MS;
+      while (!seen()) {
+        if (Date.now() > deadline) throw new Error("the command stream never settled");
+        await wait(TICK_MS);
+      }
+
+      return commands.filter((command) => !command.includes(token));
+    },
+  };
+}
+
+/** The names, uppercased, of the commands that carried the Tag manifest or its log. */
+export function tagCommandNames(commands: string[][], keyPrefix: string): string[] {
+  return commands
+    .filter((command) => command.some((argument) => argument.startsWith(`${keyPrefix}{tags}`)))
+    .map((command) => (command[0] ?? "").toUpperCase());
+}
+
+function argumentsOf(line: string): string[] {
+  return [...line.matchAll(ARGUMENT)].map(([, argument]) => argument ?? "");
 }

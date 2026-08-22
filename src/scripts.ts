@@ -51,6 +51,25 @@ end
 return 1
 `;
 
+const HMGET_CHUNK = 1000;
+
+const READ_TAG_MANIFEST_SINCE = `
+${SERVER_NOW}
+local tags = redis.call('ZRANGE', KEYS[2], ARGV[1], '+inf', 'BYSCORE')
+local fields = {}
+for start = 1, #tags, ${HMGET_CHUNK} do
+  local stop = math.min(#tags, start + ${HMGET_CHUNK} - 1)
+  local values = redis.call('HMGET', KEYS[1], unpack(tags, start, stop))
+  for index = 1, #values do
+    if values[index] then
+      fields[#fields + 1] = tags[start + index - 1]
+      fields[#fields + 1] = values[index]
+    end
+  end
+end
+return { string.format('%d', now), fields }
+`;
+
 const READ_TAG_MANIFEST = `
 ${SERVER_NOW}
 return { string.format('%d', now), redis.call('HGETALL', KEYS[1]) }
@@ -156,5 +175,24 @@ export const updateTagsScript: CacheScript<void> = defineCacheScript(
 export const readTagManifestScript: CacheScript<TagRefresh> = defineCacheScript(
   READ_TAG_MANIFEST,
   1,
+  parseTagRefresh,
+);
+
+/**
+ * The incremental read of the Tag manifest: the server clock, the log members written
+ * since the caller's watermark, and their manifest values, in one round trip. Its cost
+ * is that of the events since the last read, whatever the size of the manifest, where a
+ * full read grows with the manifest and stalls the server for every Instance.
+ *
+ * The values are read in chunks of a thousand fields because one `HMGET` of every member
+ * would build an argument list the Lua stack cannot take. A member the write script has
+ * pruned between the `ZRANGE` and the `HMGET` carries no value and is left out entirely:
+ * a tag the shared copy no longer holds is one no living Entry can be affected by.
+ *
+ * Keys: the Tag manifest hash and its log. Arguments: the log score to read from.
+ */
+export const readTagManifestSinceScript: CacheScript<TagRefresh> = defineCacheScript(
+  READ_TAG_MANIFEST_SINCE,
+  2,
   parseTagRefresh,
 );

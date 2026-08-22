@@ -4,7 +4,7 @@ import { entryAge, entryKey, entryTtlSeconds, readEntry, writeEntry } from "./en
 import { createReporter, type CacheEvent, type CacheSkipReason } from "./events.js";
 import { resolveOptions, type RedisCacheHandlerOptions } from "./options.js";
 import { createTagManifest } from "./tag-manifest.js";
-import { readTagManifest, writeTagEvents } from "./tag-store.js";
+import { readTagManifest, readTagManifestSince, writeTagEvents } from "./tag-store.js";
 import type { CacheEntry, CacheHandler, Timestamp } from "./types.js";
 
 const STALE_REVALIDATE = -1;
@@ -116,6 +116,11 @@ export function createRedisCacheHandler(
 
   async function refresh(): Promise<void> {
     const connected = await client.connected();
+    const since = manifest.since();
+    if (since !== undefined) {
+      const events = await readTagManifestSince(connected, keyPrefix, since);
+      if (manifest.mergeWith(events)) return;
+    }
 
     manifest.replaceWith(await readTagManifest(connected, keyPrefix));
   }
