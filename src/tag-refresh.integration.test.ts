@@ -6,6 +6,8 @@ import {
   freshPrefix,
   handlerFor,
   instancePair,
+  opsOf,
+  recording,
   seedTagEvents,
   serverClient,
   type ServerClient,
@@ -211,7 +213,8 @@ test(
     const keyPrefix = freshPrefix();
     const server = await serverClient();
     await seedManifest(server, keyPrefix, SEEDED_TAGS);
-    const handler = handlerFor(keyPrefix);
+    const { errors, hooks } = recording();
+    const handler = handlerFor(keyPrefix, hooks);
     await handler.updateTags(["warm-up"]);
     await handler.refreshTags();
     const stream = await commandStream(keyPrefix);
@@ -221,6 +224,7 @@ test(
     const watermarkMs = elapsed();
 
     const commands = await stream.settled();
+    expect(opsOf(errors)).toEqual([]);
     expect(tagCommandNames(commands, keyPrefix)).not.toContain("HGETALL");
     expect(manifestFieldsRead(commands, keyPrefix)).toBeLessThanOrEqual(WATERMARK_FIELDS);
     expect(watermarkMs).toBeLessThan(DEFAULT_OPERATION_TIMEOUT);
