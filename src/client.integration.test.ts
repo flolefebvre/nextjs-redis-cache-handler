@@ -9,6 +9,9 @@ import { createRedisCacheHandler } from "./redis-cache-handler.js";
 
 const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP", "SIGUSR2"] as const;
 
+/** A retry budget short enough that a write which can only fail is not waited out. */
+const RETRY_BUDGET = 200;
+
 function freshPrefix(): string {
   return `cache-test:${randomUUID()}:`;
 }
@@ -117,6 +120,7 @@ test("an injected client that is not connected is never connected by the handler
   const handler = createRedisCacheHandler({
     client: injected,
     keyPrefix: freshPrefix(),
+    updateTagsTimeout: RETRY_BUDGET,
     ...recorded.hooks,
   });
 
