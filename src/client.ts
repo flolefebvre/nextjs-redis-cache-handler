@@ -30,7 +30,11 @@ export type CacheClient = ReturnType<typeof createTunedClient>;
 export interface CacheClientHandle {
   /** The client, connecting it on the first call and reusing it afterwards. */
   connected(): Promise<CacheClient>;
-  /** Quit the client, or resolve immediately when it was never used. */
+  /**
+   * Quit the client, or resolve immediately when it was never used. A connection
+   * attempt still in progress is destroyed rather than awaited: the reconnect strategy
+   * never gives up, so a shutdown during an outage would otherwise never return.
+   */
   close(): Promise<void>;
 }
 
@@ -65,10 +69,17 @@ export function createCacheClient(url: string): CacheClientHandle {
       return connecting;
     },
     async close(): Promise<void> {
-      if (connecting === undefined) return;
+      const attempt = connecting;
+      if (attempt === undefined) return;
+      connecting = undefined;
 
-      await connecting.catch(() => undefined);
-      await client.close();
+      if (client.isReady) {
+        await client.close();
+      } else {
+        client.destroy();
+      }
+
+      await attempt.catch(() => undefined);
     },
   };
 }

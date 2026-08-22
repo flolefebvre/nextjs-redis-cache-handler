@@ -12,6 +12,10 @@ import type { CacheEntry, CacheHandler, Timestamp } from "./types.js";
  * for the tests and for a host that shuts the handler down itself. No connection is
  * opened until the first operation, nothing is scanned or deleted at startup, and no
  * process signal handler is installed.
+ *
+ * Neither `get` nor `set` ever rejects: a read that fails is a miss and a write that
+ * fails is dropped. Next.js awaits pending writes after a Server Action, so a rejected
+ * `set` would fail the user's action over a cache blip.
  */
 export function createRedisCacheHandler(
   options: RedisCacheHandlerOptions,
@@ -46,7 +50,7 @@ export function createRedisCacheHandler(
 
   return {
     async get(cacheKey: string): Promise<undefined | CacheEntry> {
-      await pendingSets.get(cacheKey)?.catch(() => undefined);
+      await pendingSets.get(cacheKey);
 
       try {
         const stored = await load(cacheKey);
@@ -58,7 +62,7 @@ export function createRedisCacheHandler(
       }
     },
     set(cacheKey: string, pendingEntry: Promise<CacheEntry>): Promise<void> {
-      const inFlight = store(cacheKey, pendingEntry);
+      const inFlight = store(cacheKey, pendingEntry).catch(() => undefined);
       pendingSets.set(cacheKey, inFlight);
 
       return inFlight.finally(() => {

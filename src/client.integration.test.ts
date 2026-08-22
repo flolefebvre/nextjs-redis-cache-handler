@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { connect, createServer, type Socket } from "node:net";
-import { expect, inject, onTestFinished, test } from "vitest";
+import { expect, inject, onTestFinished, test, vi } from "vitest";
 
 import { createRedisCacheHandler } from "./redis-cache-handler.js";
 
@@ -60,6 +60,17 @@ test("nothing connects before the first operation", async () => {
   expect(listener.connections()).toBe(0);
   await listener.knock();
   expect(listener.connections()).toBe(1);
+});
+
+test("close() returns while a connection to an unresponsive server is still pending", async () => {
+  const listener = await countingListener();
+  const handler = createRedisCacheHandler({ url: listener.url, keyPrefix: freshPrefix() });
+
+  const reading = handler.get("anything", []);
+  await vi.waitUntil(() => listener.connections() > 0);
+  await expect(handler.close()).resolves.toBeUndefined();
+
+  expect(await reading).toBeUndefined();
 });
 
 test("close() resolves on a handler that has read and written", async () => {
