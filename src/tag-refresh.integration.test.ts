@@ -126,10 +126,11 @@ test("a handler whose client reconnected reads the whole manifest and sees what 
   await handler.refreshTags();
   const killer = await serverClient();
   const stream = await commandStream(keyPrefix);
+  const reconnected = new Promise((resolve) => injected.once("ready", resolve));
 
   await killer.sendCommand(["CLIENT", "KILL", "ID", String(await injected.clientId())]);
   await writer.updateTags(["posts"]);
-  await injected.ping();
+  await reconnected;
   await handler.refreshTags();
 
   expect(await handler.get("posts", [])).toBeUndefined();

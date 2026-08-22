@@ -140,7 +140,10 @@ export function createCacheClient(
  * Attach what the handler listens to, on a client of either kind: the `error` listener
  * node-redis crashes the process without, and the count of reconnections a refresh of the
  * Tag manifest reads. `detach` takes back exactly these two listeners, so that one
- * long-lived injected client feeding many handler objects collects none of them.
+ * long-lived injected client feeding many handler objects collects none of them. It is
+ * for an injected client only: a client the handler owns keeps its `error` listener to
+ * the end, since a socket error surfacing after `close()` on a client that has none
+ * crashes the process.
  */
 function listenTo(client: CacheClient, report: (error: unknown) => void) {
   let reconnects = 0;
@@ -197,7 +200,6 @@ function ownedClient(url: string, report: (error: unknown) => void): CacheClient
       }
 
       await attempt.catch(() => undefined);
-      listeners.detach();
     },
   };
 }

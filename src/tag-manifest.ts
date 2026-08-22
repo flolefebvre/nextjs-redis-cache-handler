@@ -7,7 +7,11 @@ const STATE_SEPARATOR = ":";
 
 const BAD_REPLY = "unreadable tag manifest reply";
 
-/** How far behind the watermark a read reaches, so a small forward clock step is absorbed. */
+/**
+ * How far behind the watermark a read reaches, so that a backwards step of the Redis
+ * clock too small to trip the full read is absorbed: an event stamped just below the
+ * watermark is still read.
+ */
 const WATERMARK_MARGIN = 1_000;
 
 /** When a tag was last made Stale and when it was last made Expired, on the Redis clock. */
@@ -125,10 +129,10 @@ export interface TagManifest {
    */
   mergeWith(refresh: TagRefresh): boolean;
   /**
-   * The log score a watermark read must start at: the last refresh's server clock less
-   * a one second margin, which absorbs a small forward step of the Redis clock. It is
-   * `undefined` while no refresh has landed, which is what makes the first read of a
-   * process a full one.
+   * The log score a watermark read must start at: the last refresh's server clock less a
+   * one second margin, which absorbs a backwards step of the Redis clock small enough to
+   * leave the watermark standing. It is `undefined` while no refresh has landed, which is
+   * what makes the first read of a process a full one.
    */
   since(): Timestamp | undefined;
   /**
