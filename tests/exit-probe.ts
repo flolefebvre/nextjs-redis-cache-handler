@@ -26,6 +26,8 @@ await handler.set(
   }),
 );
 
+await handler.refreshTags();
+
 if ((await handler.get("probe", [])) === undefined) {
   throw new Error("the probe Entry did not come back");
 }

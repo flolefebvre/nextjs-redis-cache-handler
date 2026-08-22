@@ -66,11 +66,12 @@ test("close() returns while a connection to an unresponsive server is still pend
   const listener = await countingListener();
   const handler = createRedisCacheHandler({ url: listener.url, keyPrefix: freshPrefix() });
 
-  const reading = handler.get("anything", []);
+  const refreshing = handler.refreshTags();
   await vi.waitUntil(() => listener.connections() > 0);
   await expect(handler.close()).resolves.toBeUndefined();
 
-  expect(await reading).toBeUndefined();
+  await expect(refreshing).resolves.toBeUndefined();
+  expect(await handler.get("anything", [])).toBeUndefined();
 });
 
 test("close() resolves on a handler that has read and written", async () => {

@@ -1,6 +1,6 @@
 import { createClient } from "redis";
 
-import { writeEntryScript } from "./scripts.js";
+import { readTagManifestScript, updateTagsScript, writeEntryScript } from "./scripts.js";
 
 const CONNECT_TIMEOUT = 2_000;
 const SOCKET_TIMEOUT = 30_000;
@@ -11,7 +11,11 @@ const RECONNECT_JITTER = 200;
 function createTunedClient(url: string) {
   return createClient({
     url,
-    scripts: { writeEntryHash: writeEntryScript },
+    scripts: {
+      writeEntryHash: writeEntryScript,
+      updateTagManifest: updateTagsScript,
+      readTagManifest: readTagManifestScript,
+    },
     disableOfflineQueue: true,
     pingInterval: PING_INTERVAL,
     socket: {
