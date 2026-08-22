@@ -71,6 +71,9 @@ export function instancePair(): {
   return { keyPrefix, instanceA: handlerFor(keyPrefix), instanceB: handlerFor(keyPrefix) };
 }
 
+/** What `serverClient()` hands back, for the helpers that take one. */
+export type ServerClient = Awaited<ReturnType<typeof serverClient>>;
+
 /** A plain client on the same server, to observe what the handler wrote. */
 export async function serverClient() {
   const client = createClient({ url: inject("redisUrl") });
@@ -219,4 +222,34 @@ export function tagCommandNames(commands: string[][], keyPrefix: string): string
 
 function argumentsOf(line: string): string[] {
   return [...line.matchAll(ARGUMENT)].map(([, argument]) => argument ?? "");
+}
+
+/** The Redis clock in milliseconds, as the handler's scripts read it. */
+export async function serverNow(server: ServerClient): Promise<number> {
+  const [seconds, microseconds] = await server.time();
+
+  return Number(seconds) * 1000 + Math.floor(Number(microseconds) / 1000);
+}
+
+/**
+ * Put tag events straight into the shared Tag manifest, at an instant of the Redis clock
+ * the test chooses: what the write script would have written then, in the layout the
+ * handler reads back. An event a test needs to be old is written old rather than waited
+ * for, so that nothing depends on the app clock and the server clock advancing together.
+ */
+export async function seedTagEvents(
+  server: ServerClient,
+  keyPrefix: string,
+  tags: readonly string[],
+  staleAt: number,
+  expiredAt: number,
+): Promise<void> {
+  await server.hSet(
+    `${keyPrefix}{tags}`,
+    Object.fromEntries(tags.map((tag) => [tag, `${staleAt}:${expiredAt}`])),
+  );
+  await server.zAdd(
+    `${keyPrefix}{tags}:log`,
+    tags.map((tag) => ({ score: staleAt, value: tag })),
+  );
 }

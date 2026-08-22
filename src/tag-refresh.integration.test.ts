@@ -6,16 +6,22 @@ import {
   freshPrefix,
   handlerFor,
   instancePair,
+  seedTagEvents,
   serverClient,
+  type ServerClient,
+  serverNow,
   storeBefore,
   tagCommandNames,
   tick,
-  wait,
 } from "../tests/handler-harness.js";
 import { DEFAULT_OPERATION_TIMEOUT } from "./options.js";
 import { createRedisCacheHandler } from "./redis-cache-handler.js";
 
-const MAX_TTL_SECONDS = 3;
+const MAX_TTL_SECONDS = 1;
+
+const ENTRY_AGE_MS = 120_000;
+
+const EVENT_AGE_MS = 60_000;
 
 const RACES = 50;
 
@@ -39,8 +45,6 @@ for index = 1, #ARGV do
 end
 return 1
 `;
-
-const PAST_MAX_TTL_MS = 3_200;
 
 test("an event written between two refreshes is picked up without reading the manifest again", async () => {
   const { keyPrefix, instanceA, instanceB } = instancePair();
@@ -83,24 +87,22 @@ test("ten concurrent refreshes are one read round trip, and all of them resolve"
   expect(tagCommandNames(await stream.settled(), keyPrefix)).toEqual(["EVALSHA", "ZRANGE"]);
 });
 
-test(
-  "a tag event too old to affect any living Entry stops hiding one",
-  { timeout: SLOW_TIMEOUT_MS },
-  async () => {
-    const keyPrefix = freshPrefix();
-    const writer = handlerFor(keyPrefix);
-    const reader = handlerFor(keyPrefix, { maxTtl: MAX_TTL_SECONDS });
-    await storeBefore(writer, "posts", { tags: ["posts"] });
+test("a tag event too old to affect any living Entry stops hiding one", async () => {
+  const keyPrefix = freshPrefix();
+  const writer = handlerFor(keyPrefix);
+  const reader = handlerFor(keyPrefix, { maxTtl: MAX_TTL_SECONDS });
+  const server = await serverClient();
+  const entry = entryOf({ tags: ["posts"], timestamp: Date.now() - ENTRY_AGE_MS });
+  await writer.set("posts", Promise.resolve(entry));
+  const past = (await serverNow(server)) - EVENT_AGE_MS;
 
-    await writer.updateTags(["posts"]);
-    await reader.refreshTags();
+  await seedTagEvents(server, keyPrefix, ["posts"], past, past);
+  await reader.refreshTags();
 
-    expect(await reader.get("posts", [])).toBeUndefined();
-    await wait(PAST_MAX_TTL_MS);
-    await reader.refreshTags();
-    expect(await reader.get("posts", [])).toBeDefined();
-  },
-);
+  expect(await reader.get("posts", [])).toBeUndefined();
+  await reader.refreshTags();
+  expect(await reader.get("posts", [])).toBeDefined();
+});
 
 test("both reads of the Tag manifest stay within the portable command set", async () => {
   const { keyPrefix, instanceA, instanceB } = instancePair();
@@ -179,11 +181,7 @@ test(
   },
 );
 
-async function seedManifest(
-  server: Awaited<ReturnType<typeof serverClient>>,
-  keyPrefix: string,
-  tags: number,
-): Promise<void> {
+async function seedManifest(server: ServerClient, keyPrefix: string, tags: number): Promise<void> {
   for (let first = 0; first < tags; first += SEED_BATCH) {
     const batch = Array.from({ length: SEED_BATCH }, (_, index) => `seeded:${first + index}`);
     await server.eval(SEED, {

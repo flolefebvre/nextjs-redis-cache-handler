@@ -7,6 +7,8 @@ import {
   instancePair,
   readAfterRefresh,
   serverClient,
+  seedTagEvents,
+  serverNow,
   storeBefore,
   tick,
   timingsOf,
@@ -259,33 +261,3 @@ test("a tag event too old to affect any living Entry is pruned by a later one", 
   expect(await server.zScore(`${keyPrefix}{tags}:log`, "ancient")).toBeNull();
   expect(await server.zScore(`${keyPrefix}{tags}:log`, "scheduled")).not.toBeNull();
 });
-
-/** The Redis clock in milliseconds, as the write script reads it. */
-async function serverNow(server: Awaited<ReturnType<typeof serverClient>>): Promise<number> {
-  const [seconds, microseconds] = await server.time();
-
-  return Number(seconds) * 1000 + Math.floor(Number(microseconds) / 1000);
-}
-
-/**
- * Put tag events straight into the shared copy, at an instant of the Redis clock the test
- * chooses: what the write script would have written then, in the layout every assertion
- * here reads back. An event the test needs to be old is written old rather than waited
- * for, so that no assertion depends on wall-clock time passing on a loaded machine.
- */
-async function seedTagEvents(
-  server: Awaited<ReturnType<typeof serverClient>>,
-  keyPrefix: string,
-  tags: readonly string[],
-  staleAt: number,
-  expiredAt: number,
-): Promise<void> {
-  await server.hSet(
-    `${keyPrefix}{tags}`,
-    Object.fromEntries(tags.map((tag) => [tag, `${staleAt}:${expiredAt}`])),
-  );
-  await server.zAdd(
-    `${keyPrefix}{tags}:log`,
-    tags.map((tag) => ({ score: staleAt, value: tag })),
-  );
-}
