@@ -1,4 +1,6 @@
 import type { CacheClient } from "./client.js";
+import { runScript } from "./script-runner.js";
+import { readTagManifestScript, updateTagsScript } from "./scripts.js";
 import { encodeTagDurations, type TagRefresh } from "./tag-manifest.js";
 
 /**
@@ -21,17 +23,17 @@ export async function writeTagEvents(
   maxTtl: number,
 ): Promise<void> {
   const keys = tagKeys(keyPrefix);
+  const events = encodeTagDurations(durations);
 
-  await client.updateTagManifest(
-    keys.manifest,
-    keys.log,
-    maxTtl * 1000,
-    encodeTagDurations(durations),
-    tags,
+  await runScript(
+    client,
+    updateTagsScript,
+    [keys.manifest, keys.log],
+    [String(maxTtl * 1000), events.mode, String(events.expireMs), ...tags],
   );
 }
 
 /** The whole Tag manifest, with the server clock it was read at, in one round trip. */
 export function readTagManifest(client: CacheClient, keyPrefix: string): Promise<TagRefresh> {
-  return client.readTagManifest(tagKeys(keyPrefix).manifest);
+  return runScript(client, readTagManifestScript, [tagKeys(keyPrefix).manifest], []);
 }

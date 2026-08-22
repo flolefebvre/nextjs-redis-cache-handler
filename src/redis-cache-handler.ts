@@ -2,12 +2,7 @@ import { createCacheClient } from "./client.js";
 import type { BufferedEntry, StoredEntry } from "./entry-hash.js";
 import { entryAge, entryKey, entryTtlSeconds, readEntry, writeEntry } from "./entry-store.js";
 import { createReporter, type CacheEvent, type CacheSkipReason } from "./events.js";
-import {
-  DEFAULT_KEY_PREFIX,
-  DEFAULT_MAX_ENTRY_SIZE,
-  DEFAULT_MAX_TTL,
-  type RedisCacheHandlerOptions,
-} from "./options.js";
+import { resolveOptions, type RedisCacheHandlerOptions } from "./options.js";
 import { createTagManifest } from "./tag-manifest.js";
 import { readTagManifest, writeTagEvents } from "./tag-store.js";
 import type { CacheEntry, CacheHandler, Timestamp } from "./types.js";
@@ -32,6 +27,11 @@ type ReadOutcome =
  * opened until the first operation, nothing is scanned or deleted at startup, and no
  * process signal handler is installed.
  *
+ * Every option is checked here and now: a bad value, an unknown key, or both or neither
+ * of `url` and `client` throws synchronously, naming the option. A client given as
+ * `client` is used exactly as the caller handed it over — never connected, never quit,
+ * and left open by `close()`.
+ *
  * Neither `get` nor `set` ever rejects: a read that fails is a miss and a write that
  * fails is dropped. Next.js awaits pending writes after a Server Action, so a rejected
  * `set` would fail the user's action over a cache blip. `refreshTags` never rejects
@@ -48,11 +48,10 @@ type ReadOutcome =
 export function createRedisCacheHandler(
   options: RedisCacheHandlerOptions,
 ): CacheHandler & { close(): Promise<void> } {
-  const keyPrefix = options.keyPrefix ?? DEFAULT_KEY_PREFIX;
-  const maxTtl = options.maxTtl ?? DEFAULT_MAX_TTL;
-  const maxEntrySize = options.maxEntrySize ?? DEFAULT_MAX_ENTRY_SIZE;
-  const reporter = createReporter(options);
-  const client = createCacheClient(options.url, reporter.fail);
+  const resolved = resolveOptions(options);
+  const { keyPrefix, maxTtl, maxEntrySize } = resolved;
+  const reporter = createReporter(resolved);
+  const client = createCacheClient(resolved.connection, reporter.fail);
   const pendingSets = new Map<string, Promise<void>>();
   const manifest = createTagManifest();
   let refreshing: Promise<void> | undefined;

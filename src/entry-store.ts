@@ -7,9 +7,12 @@ import {
   type BufferedEntry,
   type StoredEntry,
 } from "./entry-hash.js";
+import { runScript } from "./script-runner.js";
+import { writeEntryScript } from "./scripts.js";
 import type { Timestamp } from "./types.js";
 
 const NEVER_EXPIRES = 4_294_967_294;
+const BINARY_VALUES = { [RESP_TYPES.BLOB_STRING]: Buffer };
 
 /** Where one Entry lives: the Key prefix, used verbatim, then Next.js's cache key raw. */
 export function entryKey(keyPrefix: string, cacheKey: string): string {
@@ -45,7 +48,12 @@ export async function writeEntry(
   age: number,
   ttlSeconds: number,
 ): Promise<void> {
-  await client.writeEntryHash(key, age, ttlSeconds, encodeEntryFields(entry));
+  await runScript(
+    client,
+    writeEntryScript,
+    [key],
+    [String(age), String(ttlSeconds), ...encodeEntryFields(entry)],
+  );
 }
 
 /**
@@ -56,7 +64,7 @@ export async function readEntry(
   client: CacheClient,
   key: string,
 ): Promise<StoredEntry | undefined> {
-  const hash = await client.withTypeMapping({ [RESP_TYPES.BLOB_STRING]: Buffer }).hGetAll(key);
+  const hash = await client.withTypeMapping(BINARY_VALUES).hGetAll(key);
 
   return decodeEntryHash(hash);
 }
