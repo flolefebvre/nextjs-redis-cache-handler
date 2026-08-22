@@ -6,6 +6,7 @@ import {
   entryOf,
   freshPrefix,
   handlerFor,
+  recording,
   serverClient,
   timingsOf,
 } from "../tests/handler-harness.js";
@@ -73,6 +74,71 @@ test("an Entry longer-lived than the TTL cap is capped", async () => {
   const server = await serverClient();
 
   expect(await server.ttl(`${keyPrefix}entry:capped`)).toBeLessThanOrEqual(60);
+});
+
+test("a TTL is what is left of the Entry's lifetime at its Write time, cap included", async () => {
+  const keyPrefix = freshPrefix();
+  const [handler, capped] = [handlerFor(keyPrefix), handlerFor(keyPrefix, { maxTtl: 120 })];
+  const server = await serverClient();
+
+  await handler.set("aged", Promise.resolve(entryOf({ timestamp: Date.now() - 895_000 })));
+  await capped.set(
+    "at-cap",
+    Promise.resolve(entryOf({ expire: Infinity, timestamp: Date.now() - 115_000 })),
+  );
+
+  expect(await server.ttl(`${keyPrefix}entry:aged`)).toBeGreaterThan(1);
+  expect(await server.ttl(`${keyPrefix}entry:aged`)).toBeLessThanOrEqual(5);
+  expect(await server.ttl(`${keyPrefix}entry:at-cap`)).toBeGreaterThan(1);
+  expect(await server.ttl(`${keyPrefix}entry:at-cap`)).toBeLessThanOrEqual(5);
+});
+
+test("an Entry as old as its expire is not stored and reads as a miss", async () => {
+  const keyPrefix = freshPrefix();
+  const recorded = recording();
+  const handler = handlerFor(keyPrefix, recorded.hooks);
+  const server = await serverClient();
+  await handler.refreshTags();
+
+  await handler.set(
+    "spent",
+    Promise.resolve(entryOf({ expire: 900, timestamp: Date.now() - 900_000 })),
+  );
+
+  expect(recorded.events).toEqual([
+    {
+      type: "skip",
+      reason: "too-old",
+      size: VALUE.byteLength,
+      key: "spent",
+      durationMs: expect.any(Number),
+    },
+  ]);
+  expect(await server.exists(`${keyPrefix}entry:spent`)).toBe(0);
+  expect(await handler.get("spent", [])).toBeUndefined();
+});
+
+test("an Entry as old as the TTL cap is not stored either", async () => {
+  const keyPrefix = freshPrefix();
+  const recorded = recording();
+  const handler = handlerFor(keyPrefix, { ...recorded.hooks, maxTtl: 60 });
+  const server = await serverClient();
+
+  await handler.set(
+    "capped",
+    Promise.resolve(entryOf({ expire: 3600, timestamp: Date.now() - 70_000 })),
+  );
+
+  expect(recorded.events).toEqual([
+    {
+      type: "skip",
+      reason: "too-old",
+      size: VALUE.byteLength,
+      key: "capped",
+      durationMs: expect.any(Number),
+    },
+  ]);
+  expect(await server.exists(`${keyPrefix}entry:capped`)).toBe(0);
 });
 
 test("a negative revalidate is stored and returned unchanged", async () => {

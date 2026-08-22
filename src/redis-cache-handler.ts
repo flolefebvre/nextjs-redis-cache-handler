@@ -47,8 +47,9 @@ type ReadOutcome =
  *
  * Every outcome of a `get` and of a `set` is reported to `onEvent`, and every failure to
  * `onError` with the operation it happened in. An Entry the wrapper would read as expired
- * on every read, or one whose value is larger than `maxEntrySize`, is not written at all
- * and is reported as a `skip`.
+ * on every read, one whose age has already consumed the whole lifetime `min(expire,
+ * maxTtl)` gives it, or one whose value is larger than `maxEntrySize`, is not written at
+ * all and is reported as a `skip`.
  */
 export function createRedisCacheHandler(
   options: RedisCacheHandlerOptions,
@@ -66,7 +67,9 @@ export function createRedisCacheHandler(
     const entry = await pendingEntry;
     const value = await readStream(entry.value);
     const startedAt = performance.now();
-    const skipped = skipReason(entry, value, maxEntrySize);
+    const age = entryAge(entry.timestamp, Date.now());
+    const ttlSeconds = entryTtlSeconds(entry.expire, maxTtl, age);
+    const skipped = skipReason(entry, value, maxEntrySize, ttlSeconds);
     if (skipped !== undefined) {
       reporter.emit({
         type: "skip",
@@ -79,7 +82,6 @@ export function createRedisCacheHandler(
       return;
     }
 
-    const age = entryAge(entry.timestamp, Date.now());
     const connected = await client.connected();
 
     await writeEntry(
@@ -87,7 +89,7 @@ export function createRedisCacheHandler(
       entryKey(keyPrefix, cacheKey),
       { ...entry, value },
       age,
-      entryTtlSeconds(entry.expire, maxTtl),
+      ttlSeconds,
     );
     reporter.emit({ type: "set", key: cacheKey, durationMs: performance.now() - startedAt });
   }
@@ -193,8 +195,10 @@ function skipReason(
   entry: CacheEntry,
   value: Uint8Array,
   maxEntrySize: number,
+  ttlSeconds: number,
 ): CacheSkipReason | undefined {
   if (entry.expire <= 0) return "expire-zero";
+  if (ttlSeconds <= 0) return "too-old";
   if (value.byteLength > maxEntrySize) return "too-large";
 
   return undefined;
