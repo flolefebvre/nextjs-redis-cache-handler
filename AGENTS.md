@@ -19,9 +19,12 @@ Its domain language is `CONTEXT.md`'s and is binding — use those words, avoid 
 
 ```
 src/            Library source, collocated .test.ts and .integration.test.ts
-  index.ts      The `.` entry: the factory, its options type, handlerPath, the vendored types
-  handler.ts    The `./handler` entry: the Zero-config handler object
-  types.ts      The vendored Next.js cache handler interface
+  index.ts        The `.` entry: the factory, its options type, handlerPath, the vendored types
+  index.edge.ts   Its Edge target, resolved through the `edge-light` condition
+  handler.ts      The `./handler` entry: a re-export of the target its runtime can run
+  handler.node.ts Its Node.js target: the Zero-config handler object
+  handler.edge.ts Its Edge target: the disabled handler, no redis and no node: import
+  types.ts        The vendored Next.js cache handler interface
 scripts/        Repo tooling, run with tsx
 tests/          Test harness wiring, and tests that exercise it
   dist-consumer/  A consumer compiled against the built output, for typecheck:dist, and the
