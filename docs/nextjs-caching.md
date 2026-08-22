@@ -444,7 +444,7 @@ it in the root-params joiner path (`:405-411`, `:2063-2077`).
   `export const config = { runtime: 'experimental-edge' }` on a page goes
   through `next-edge-ssr-loader` and pulls the handler in. A pages **API**
   route (`next-edge-function-loader`) and `middleware.ts`
-  (`next-middleware-loader`) inject no `cacheHandlers` and never do.
+  (`next-middleware-loader`) inject no `cacheHandlers`.
 - The `edge-light` condition (`edgeConditionName` in
   `dist/build/webpack-config-rules/resolve.js`) is honoured by **both**
   bundlers, but only for **bare specifiers**. Neither registration form is
