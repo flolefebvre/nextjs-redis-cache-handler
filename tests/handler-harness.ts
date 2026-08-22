@@ -3,7 +3,7 @@ import { createClient } from "redis";
 import { inject, onTestFinished } from "vitest";
 
 import { createRedisCacheHandler } from "../src/redis-cache-handler.js";
-import type { CacheEntry } from "../src/types.js";
+import type { CacheEntry, CacheHandler } from "../src/types.js";
 
 /** A value with bytes no UTF-8 decoder would give back, as an RSC payload has. */
 export const VALUE = Uint8Array.from([0x00, 0xff, 0xfe, 0x80, 0x01, 0xc3, 0x28]);
@@ -24,8 +24,19 @@ export function handlerFor(
   return handler;
 }
 
+/** Two Instances of one app: two handler objects on one fresh Key prefix. */
+export function instancePair(): {
+  keyPrefix: string;
+  instanceA: ReturnType<typeof handlerFor>;
+  instanceB: ReturnType<typeof handlerFor>;
+} {
+  const keyPrefix = freshPrefix();
+
+  return { keyPrefix, instanceA: handlerFor(keyPrefix), instanceB: handlerFor(keyPrefix) };
+}
+
 /** A plain client on the same server, to observe what the handler wrote. */
-export async function serverClient(): Promise<ReturnType<typeof createClient>> {
+export async function serverClient() {
   const client = createClient({ url: inject("redisUrl") });
   client.on("error", () => undefined);
   await client.connect();
@@ -72,6 +83,19 @@ export function entryOf(overrides: Partial<CacheEntry> = {}): CacheEntry {
     revalidate: 60,
     ...overrides,
   };
+}
+
+/**
+ * An Entry stored by one Instance, with the clock moved on afterwards so that a tag event
+ * issued next is unambiguously later than the Entry's Write time.
+ */
+export async function storeBefore(
+  instance: CacheHandler,
+  cacheKey: string,
+  overrides: Partial<CacheEntry> = {},
+): Promise<void> {
+  await instance.set(cacheKey, Promise.resolve(entryOf(overrides)));
+  await tick();
 }
 
 /** Everything a returned Entry carries besides its value. */

@@ -4,19 +4,19 @@ import {
   entryOf,
   freshPrefix,
   handlerFor,
+  instancePair,
   serverClient,
+  storeBefore,
   tick,
   timingsOf,
 } from "../tests/handler-harness.js";
 import type { CacheEntry } from "./types.js";
 
 test("a tag another Instance expired makes the Entry a miss on the next request", async () => {
-  const keyPrefix = freshPrefix();
-  const [instanceA, instanceB] = [handlerFor(keyPrefix), handlerFor(keyPrefix)];
+  const { instanceA, instanceB } = instancePair();
   await instanceB.refreshTags();
 
-  await instanceA.set("posts", Promise.resolve(entryOf({ tags: ["posts"] })));
-  await tick();
+  await storeBefore(instanceA, "posts", { tags: ["posts"] });
   await instanceA.updateTags(["posts"]);
   await instanceB.refreshTags();
 
@@ -62,11 +62,9 @@ test("a tag event leaves exactly the two Tag manifest keys under the Key prefix"
 });
 
 test("concurrent refreshes of one handler object share a single read", async () => {
-  const keyPrefix = freshPrefix();
-  const [instanceA, instanceB] = [handlerFor(keyPrefix), handlerFor(keyPrefix)];
+  const { instanceA, instanceB } = instancePair();
 
-  await instanceA.set("posts", Promise.resolve(entryOf({ tags: ["posts"] })));
-  await tick();
+  await storeBefore(instanceA, "posts", { tags: ["posts"] });
   await instanceA.updateTags(["posts"]);
   await Promise.all([instanceB.refreshTags(), instanceB.refreshTags(), instanceB.refreshTags()]);
 
@@ -74,8 +72,7 @@ test("concurrent refreshes of one handler object share a single read", async () 
 });
 
 test("an Entry written after the tag event is served", async () => {
-  const keyPrefix = freshPrefix();
-  const [instanceA, instanceB] = [handlerFor(keyPrefix), handlerFor(keyPrefix)];
+  const { instanceA, instanceB } = instancePair();
 
   await instanceA.updateTags(["posts"]);
   await tick();
@@ -89,8 +86,7 @@ test("an Entry written after the tag event is served", async () => {
 });
 
 test("a tag revalidated for max is served once more, with its other timings unchanged", async () => {
-  const keyPrefix = freshPrefix();
-  const [instanceA, instanceB] = [handlerFor(keyPrefix), handlerFor(keyPrefix)];
+  const { instanceA, instanceB } = instancePair();
   const entry = entryOf({ tags: ["posts"] });
 
   await instanceA.set("posts", Promise.resolve(entry));
@@ -105,12 +101,10 @@ test("a tag revalidated for max is served once more, with its other timings unch
 });
 
 test("a tag expired now, however Next.js says it, is an immediate miss", async () => {
-  const keyPrefix = freshPrefix();
-  const [instanceA, instanceB] = [handlerFor(keyPrefix), handlerFor(keyPrefix)];
+  const { instanceA, instanceB } = instancePair();
 
   await instanceA.set("zero", Promise.resolve(entryOf({ tags: ["zero"] })));
-  await instanceA.set("legacy", Promise.resolve(entryOf({ tags: ["legacy"] })));
-  await tick();
+  await storeBefore(instanceA, "legacy", { tags: ["legacy"] });
   await instanceA.updateTags(["zero"], { expire: 0 });
   await instanceA.updateTags(["legacy"]);
   await instanceB.refreshTags();
@@ -120,11 +114,9 @@ test("a tag expired now, however Next.js says it, is an immediate miss", async (
 });
 
 test("durations without an expire make the tag Stale and leave its expiration where it was", async () => {
-  const keyPrefix = freshPrefix();
-  const [instanceA, instanceB] = [handlerFor(keyPrefix), handlerFor(keyPrefix)];
+  const { instanceA, instanceB } = instancePair();
 
-  await instanceA.set("posts", Promise.resolve(entryOf({ tags: ["posts"] })));
-  await tick();
+  await storeBefore(instanceA, "posts", { tags: ["posts"] });
   await instanceA.updateTags(["posts"], { expire: 31536000 });
   await instanceA.updateTags(["posts"], {});
   await instanceB.refreshTags();
@@ -136,8 +128,7 @@ test("durations without an expire make the tag Stale and leave its expiration wh
 });
 
 test("a Soft tag expired elsewhere makes the Entry miss, and is never stored on it", async () => {
-  const keyPrefix = freshPrefix();
-  const [instanceA, instanceB] = [handlerFor(keyPrefix), handlerFor(keyPrefix)];
+  const { instanceA, instanceB } = instancePair();
   const softTags = ["_N_T_/layout", "_N_T_/blog"];
 
   await instanceA.set("page", Promise.resolve(entryOf({ tags: ["posts"] })));
@@ -153,11 +144,9 @@ test("a Soft tag expired elsewhere makes the Entry miss, and is never stored on 
 });
 
 test("an outer Entry carrying an inner scope's tag misses when that inner tag is expired", async () => {
-  const keyPrefix = freshPrefix();
-  const [instanceA, instanceB] = [handlerFor(keyPrefix), handlerFor(keyPrefix)];
+  const { instanceA, instanceB } = instancePair();
 
-  await instanceA.set("outer", Promise.resolve(entryOf({ tags: ["outer", "inner"] })));
-  await tick();
+  await storeBefore(instanceA, "outer", { tags: ["outer", "inner"] });
   await instanceA.updateTags(["inner"]);
   await instanceB.refreshTags();
 
@@ -165,8 +154,7 @@ test("an outer Entry carrying an inner scope's tag misses when that inner tag is
 });
 
 test("an Entry claiming a generation start in the future is stamped no later than the server clock", async () => {
-  const keyPrefix = freshPrefix();
-  const [instanceA, instanceB] = [handlerFor(keyPrefix), handlerFor(keyPrefix)];
+  const { instanceA, instanceB } = instancePair();
   const ahead = entryOf({ tags: ["posts"], timestamp: Date.now() + 5_000 });
 
   await instanceA.set("skewed", Promise.resolve(ahead));
@@ -178,8 +166,7 @@ test("an Entry claiming a generation start in the future is stamped no later tha
 });
 
 test("an Entry whose render was running when the tag event landed is dropped", async () => {
-  const keyPrefix = freshPrefix();
-  const [instanceA, instanceB] = [handlerFor(keyPrefix), handlerFor(keyPrefix)];
+  const { instanceA, instanceB } = instancePair();
   const started = Date.now() - 5_000;
 
   await instanceA.updateTags(["posts"]);
@@ -190,8 +177,7 @@ test("an Entry whose render was running when the tag event landed is dropped", a
 });
 
 test("an Entry whose render started after the tag event is served, however long it took", async () => {
-  const keyPrefix = freshPrefix();
-  const [instanceA, instanceB] = [handlerFor(keyPrefix), handlerFor(keyPrefix)];
+  const { instanceA, instanceB } = instancePair();
 
   await instanceA.updateTags(["posts"]);
   await tick();
