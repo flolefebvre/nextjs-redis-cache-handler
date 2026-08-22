@@ -15,17 +15,17 @@ import {
 import { DEFAULT_OPERATION_TIMEOUT } from "./options.js";
 import { createRedisCacheHandler } from "./redis-cache-handler.js";
 
-const MAX_TTL_SECONDS = 1;
+const MAX_TTL_SECONDS = 3;
 
 const RACES = 50;
 
 const SEEDED_TAGS = 100_000;
 
-const SEED_BATCH = 5_000;
+const SEED_BATCH = 20_000;
 
 const SEEDED_AGE_MS = 60_000;
 
-const SEEDED_TIMEOUT_MS = 60_000;
+const SLOW_TIMEOUT_MS = 60_000;
 
 const COST_RATIO = 5;
 
@@ -40,7 +40,7 @@ end
 return 1
 `;
 
-const PAST_MAX_TTL_MS = 1_200;
+const PAST_MAX_TTL_MS = 3_200;
 
 test("an event written between two refreshes is picked up without reading the manifest again", async () => {
   const { keyPrefix, instanceA, instanceB } = instancePair();
@@ -83,20 +83,24 @@ test("ten concurrent refreshes are one read round trip, and all of them resolve"
   expect(tagCommandNames(await stream.settled(), keyPrefix)).toEqual(["EVALSHA", "ZRANGE"]);
 });
 
-test("a tag event too old to affect any living Entry stops hiding one", async () => {
-  const keyPrefix = freshPrefix();
-  const writer = handlerFor(keyPrefix);
-  const reader = handlerFor(keyPrefix, { maxTtl: MAX_TTL_SECONDS });
-  await storeBefore(writer, "posts", { tags: ["posts"] });
+test(
+  "a tag event too old to affect any living Entry stops hiding one",
+  { timeout: SLOW_TIMEOUT_MS },
+  async () => {
+    const keyPrefix = freshPrefix();
+    const writer = handlerFor(keyPrefix);
+    const reader = handlerFor(keyPrefix, { maxTtl: MAX_TTL_SECONDS });
+    await storeBefore(writer, "posts", { tags: ["posts"] });
 
-  await writer.updateTags(["posts"]);
-  await reader.refreshTags();
+    await writer.updateTags(["posts"]);
+    await reader.refreshTags();
 
-  expect(await reader.get("posts", [])).toBeUndefined();
-  await wait(PAST_MAX_TTL_MS);
-  await reader.refreshTags();
-  expect(await reader.get("posts", [])).toBeDefined();
-});
+    expect(await reader.get("posts", [])).toBeUndefined();
+    await wait(PAST_MAX_TTL_MS);
+    await reader.refreshTags();
+    expect(await reader.get("posts", [])).toBeDefined();
+  },
+);
 
 test("both reads of the Tag manifest stay within the portable command set", async () => {
   const { keyPrefix, instanceA, instanceB } = instancePair();
@@ -158,7 +162,7 @@ test("two Instances writing on the same millisecond are both seen by a third", a
 
 test(
   "with a manifest of a hundred thousand tags, a watermark refresh costs a fraction of a full one",
-  { timeout: SEEDED_TIMEOUT_MS },
+  { timeout: SLOW_TIMEOUT_MS },
   async () => {
     const keyPrefix = freshPrefix();
     const server = await serverClient();

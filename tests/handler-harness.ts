@@ -166,7 +166,9 @@ export interface CommandStream {
   /**
    * Every command the server has run on this Key prefix since the stream was opened.
    * A marker command is sent and awaited first, so that everything the server ran before
-   * this call has reached the stream.
+   * this call has reached the stream, and the watching stops as it returns: `MONITOR`
+   * feeds one connection every command of the whole server, which slows every other test
+   * running against it.
    */
   settled(): Promise<string[][]>;
 }
@@ -183,7 +185,7 @@ export async function commandStream(keyPrefix: string): Promise<CommandStream> {
   const monitor = createClient({ url: inject("redisUrl") });
   monitor.on("error", () => undefined);
   await monitor.connect();
-  onTestFinished(() => monitor.close());
+  onTestFinished(() => monitor.close().catch(() => undefined));
   await monitor.monitor((line) => {
     const command = argumentsOf(String(line));
     if (command.some((argument) => argument.includes(keyPrefix))) commands.push(command);
@@ -201,6 +203,7 @@ export async function commandStream(keyPrefix: string): Promise<CommandStream> {
         if (Date.now() > deadline) throw new Error("the command stream never settled");
         await wait(TICK_MS);
       }
+      await monitor.close();
 
       return commands.filter((command) => !command.includes(token));
     },
