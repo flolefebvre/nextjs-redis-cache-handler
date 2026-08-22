@@ -53,7 +53,7 @@ export function createRedisCacheHandler(
   const reporter = createReporter(resolved);
   const client = createCacheClient(resolved.connection, reporter.fail);
   const pendingSets = new Map<string, Promise<void>>();
-  const manifest = createTagManifest();
+  const manifest = createTagManifest(maxTtl * 1000);
   let refreshing: Promise<void> | undefined;
 
   async function store(cacheKey: string, pendingEntry: Promise<CacheEntry>): Promise<void> {

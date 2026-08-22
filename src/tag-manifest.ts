@@ -7,6 +7,9 @@ const STATE_SEPARATOR = ":";
 
 const BAD_REPLY = "unreadable tag manifest reply";
 
+/** How far behind the watermark a read reaches, so a small forward clock step is absorbed. */
+const WATERMARK_MARGIN = 1_000;
+
 /** When a tag was last made Stale and when it was last made Expired, on the Redis clock. */
 export interface TagState {
   staleAt: Timestamp;
@@ -111,6 +114,24 @@ export interface TagManifest {
   /** Take the whole manifest a refresh brought back, dropping the previous copy. */
   replaceWith(refresh: TagRefresh): void;
   /**
+   * Take in an incremental refresh: the tags it carries overwrite the ones held, the
+   * others are kept, and the tags no living Entry can be affected by any more are
+   * dropped.
+   *
+   * `false` means the refresh could not be merged — no refresh has landed in this copy
+   * yet, or its clock is behind the watermark because the Redis host stepped its clock
+   * back — and that the copy was left exactly as it was, so that the caller takes a full
+   * read in that same call rather than on the next one.
+   */
+  mergeWith(refresh: TagRefresh): boolean;
+  /**
+   * The log score a watermark read must start at: the last refresh's server clock less
+   * a one second margin, which absorbs a small forward step of the Redis clock. It is
+   * `undefined` while no refresh has landed, which is what makes the first read of a
+   * process a full one.
+   */
+  since(): Timestamp | undefined;
+  /**
    * The Redis clock as of now, or `undefined` while no refresh has landed in this
    * process. It is the last refresh's instant plus the time elapsed since, measured on a
    * monotonic clock so that a step of the app's clock cannot move it.
@@ -124,10 +145,14 @@ export interface TagManifest {
   ): TagVerdict;
 }
 
-/** Build the empty local copy one handler object keeps for its process. */
-export function createTagManifest(): TagManifest {
+/**
+ * Build the empty local copy one handler object keeps for its process. `maxTtlMs` is the
+ * Entry TTL cap in milliseconds: the age past which a tag event is dropped from the copy.
+ */
+export function createTagManifest(maxTtlMs: number): TagManifest {
   let states = new Map<string, TagState>();
   let anchor: { serverNow: Timestamp; elapsedFrom: number } | undefined;
+  let watermark: Timestamp | undefined;
 
   function serverNow(): Timestamp | undefined {
     if (anchor === undefined) return undefined;
@@ -135,10 +160,27 @@ export function createTagManifest(): TagManifest {
     return anchor.serverNow + (performance.now() - anchor.elapsedFrom);
   }
 
+  function anchorOn(refresh: TagRefresh): void {
+    anchor = { serverNow: refresh.serverNow, elapsedFrom: performance.now() };
+    watermark = refresh.serverNow;
+  }
+
   return {
     replaceWith(refresh: TagRefresh): void {
       states = refresh.states;
-      anchor = { serverNow: refresh.serverNow, elapsedFrom: performance.now() };
+      anchorOn(refresh);
+    },
+    mergeWith(refresh: TagRefresh): boolean {
+      if (watermark === undefined || refresh.serverNow < watermark) return false;
+
+      for (const [tag, state] of refresh.states) states.set(tag, state);
+      prune(states, refresh.serverNow - maxTtlMs);
+      anchorOn(refresh);
+
+      return true;
+    },
+    since(): Timestamp | undefined {
+      return watermark === undefined ? undefined : watermark - WATERMARK_MARGIN;
     },
     serverNow,
     verdictFor(
@@ -149,4 +191,20 @@ export function createTagManifest(): TagManifest {
       return tagVerdict(states, tags, softTags, writeTime, serverNow() ?? 0);
     },
   };
+}
+
+/**
+ * Drop the tags whose last event is older than the cutoff and whose expiration is older
+ * than it too, the rule the write script prunes the shared copy by. `expiredAt` at `0`
+ * ("never made Expired") is always older than the cutoff, and so are all its Entries.
+ *
+ * Such a tag can only ever have dropped an Entry written before the cutoff, and no Entry
+ * that old is still in the store: every Entry is written with a TTL of at most `maxTtl`.
+ * The local copy has no log scores, so the cutoff is taken on `staleAt`, which is never
+ * later than the score the shared log holds for the tag.
+ */
+function prune(states: Map<string, TagState>, cutoff: Timestamp): void {
+  for (const [tag, state] of states) {
+    if (state.staleAt <= cutoff && state.expiredAt <= cutoff) states.delete(tag);
+  }
 }
