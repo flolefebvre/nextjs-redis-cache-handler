@@ -22,7 +22,9 @@
     "redis",
     "valkey"
   ],
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/handler.js"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
