@@ -18,3 +18,16 @@ export function entryOf(): Promise<CacheEntry> {
     revalidate: 60,
   });
 }
+
+/**
+ * How long has passed since it was called, in milliseconds, on the monotonic clock: what
+ * every duration a test measures goes through. A host whose wall clock steps backwards
+ * mid-test — an NTP correction, a virtual machine resyncing — makes `Date.now()` hand
+ * back an elapsed time that is short by the step, negative ones included, which fails a
+ * timing assertion the code under test never broke.
+ */
+export function stopwatch(): () => number {
+  const startedAt = performance.now();
+
+  return (): number => performance.now() - startedAt;
+}

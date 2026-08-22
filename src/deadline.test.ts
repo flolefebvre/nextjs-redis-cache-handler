@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 
+import { stopwatch } from "../tests/unit-harness.js";
 import { DeadlineError, withDeadline } from "./deadline.js";
 
 const SHORT = 20;
@@ -16,12 +17,12 @@ describe("withDeadline", () => {
   });
 
   test("rejects with a DeadlineError once the operation has taken too long", async () => {
-    const started = Date.now();
+    const elapsed = stopwatch();
 
     const bounded = withDeadline(SHORT, () => wait(LONG));
 
     await expect(bounded).rejects.toBeInstanceOf(DeadlineError);
-    expect(Date.now() - started).toBeLessThan(LONG);
+    expect(elapsed()).toBeLessThan(LONG);
   });
 
   test("lets the operation's own failure through, as it is", async () => {
