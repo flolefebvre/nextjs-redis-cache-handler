@@ -19,7 +19,7 @@ Its domain language is `CONTEXT.md`'s and is binding — use those words, avoid 
 
 ```
 src/            Library source, collocated .test.ts and .integration.test.ts
-  index.ts      The `.` entry: the factory, handlerPath, the vendored types
+  index.ts      The `.` entry: the factory, its options type, handlerPath, the vendored types
   handler.ts    The `./handler` entry: the Zero-config handler object
   types.ts      The vendored Next.js cache handler interface
 scripts/        Repo tooling, run with tsx
