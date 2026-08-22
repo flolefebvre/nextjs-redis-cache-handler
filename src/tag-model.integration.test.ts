@@ -196,3 +196,18 @@ test("getExpiration never asks the wrapper to discard anything", async () => {
   await expect(handler.getExpiration([])).resolves.toBe(Infinity);
   await expect(handler.getExpiration(["posts", "_N_T_/blog"])).resolves.toBe(Infinity);
 });
+
+test("a tag event too old to affect any living Entry is pruned by a later one", async () => {
+  const keyPrefix = freshPrefix();
+  const handler = handlerFor(keyPrefix, 1);
+  const server = await serverClient();
+
+  await handler.updateTags(["ancient"]);
+  await handler.updateTags(["scheduled"], { expire: 31536000 });
+  await new Promise((resolve) => setTimeout(resolve, 1_200));
+  await handler.updateTags(["recent"]);
+
+  expect((await server.hKeys(`${keyPrefix}{tags}`)).sort()).toEqual(["recent", "scheduled"]);
+  expect(await server.zScore(`${keyPrefix}{tags}:log`, "ancient")).toBeNull();
+  expect(await server.zScore(`${keyPrefix}{tags}:log`, "scheduled")).not.toBeNull();
+});
