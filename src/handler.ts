@@ -1,4 +1,4 @@
-import { createDisabledHandler } from "./disabled-handler.js";
+import { createDisabledHandler, NO_REDIS_URL } from "./disabled-handler.js";
 import { optionsFromEnv } from "./env.js";
 import { createRedisCacheHandler } from "./redis-cache-handler.js";
 import type { CacheHandler } from "./types.js";
@@ -41,7 +41,9 @@ const handler: CacheHandler = fromEnvironment();
 function fromEnvironment(): CacheHandler {
   const options = optionsFromEnv(process.env);
 
-  return options === undefined ? createDisabledHandler() : createRedisCacheHandler(options);
+  return options === undefined
+    ? createDisabledHandler(NO_REDIS_URL)
+    : createRedisCacheHandler(options);
 }
 
 export default handler;

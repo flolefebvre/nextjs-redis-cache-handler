@@ -1,9 +1,16 @@
 import { LOG_PREFIX } from "./events.js";
 import type { CacheEntry, CacheHandler, Timestamp } from "./types.js";
 
-const DISABLED =
+/** What the Zero-config entry reports when no store is configured at all. */
+export const NO_REDIS_URL =
   `${LOG_PREFIX} REDIS_URL is not set: the cache is disabled. Every read is a miss and ` +
   `every write is dropped, so nothing is shared between Instances.`;
+
+/** What the Edge target reports: no Redis client can run on the Edge runtime. */
+export const EDGE_UNSUPPORTED =
+  `${LOG_PREFIX} the Edge runtime is not supported by this handler: this scope renders ` +
+  `uncached. Move the route to the Node.js runtime for its output to be shared between ` +
+  `Instances.`;
 
 /**
  * The handler the Zero-config entry falls back to when no store is configured: it stores
@@ -18,17 +25,20 @@ const DISABLED =
  *
  * Silence would be worse than the outage it stands for, so the first operation — whichever
  * one it is — reports once, and only once, however long the process then runs: an app that
- * lost its `REDIS_URL` says so, without one line per cache read. `report` defaults to
+ * lost its `REDIS_URL` says so, without one line per cache read. `message` is the line to
+ * report — `NO_REDIS_URL` for the Zero-config entry, `EDGE_UNSUPPORTED` for the Edge
+ * target — since the same empty cache stands for more than one cause. `report` defaults to
  * `console.error`; the tests hand over their own.
  */
 export function createDisabledHandler(
+  message: string,
   report: (message: string) => void = logDisabled,
 ): CacheHandler {
   let reported = false;
   const reportOnce = (): void => {
     if (reported) return;
     reported = true;
-    report(DISABLED);
+    report(message);
   };
 
   return {
