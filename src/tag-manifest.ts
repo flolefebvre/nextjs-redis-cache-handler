@@ -14,13 +14,13 @@ const BAD_REPLY = "unreadable tag manifest reply";
  */
 const WATERMARK_MARGIN = 1_000;
 
-/** When a tag was last made Stale and when it was last made Expired, on the Redis clock. */
+/** When a tag was last made Stale and when it was last made Expired, on the Handler clock. */
 export interface TagState {
   staleAt: Timestamp;
   expiredAt: Timestamp;
 }
 
-/** What one refresh of the Tag manifest brings back: the server's clock and the tags to apply. */
+/** What one refresh of the Tag manifest brings back: the Handler clock and the tags to apply. */
 export interface TagRefresh {
   serverNow: Timestamp;
   states: Map<string, TagState>;
@@ -36,7 +36,7 @@ export interface TagDurations {
 }
 
 /**
- * The manifest a full read brought back: the server clock it was read at, and the tags
+ * The manifest a full read brought back: the Handler clock it was read at, and the tags
  * the hash held. A value written by another version of this library, or by anything
  * else, is dropped rather than parsed into a state that could hide an Entry; a reply
  * that is not a manifest at all throws, so that the caller keeps its previous copy
@@ -87,7 +87,7 @@ export function encodeTagDurations(durations: { expire?: number } | undefined): 
 
 /**
  * What the manifest says about an Entry written at `writeTime`, as of `serverNow` — both
- * on the Redis clock (ADR 0002), never the app clock.
+ * on the Handler clock (ADR 0002, ADR 0003), never the app clock.
  *
  * A tag expired since the Entry was written drops it; a tag made Stale since then has it
  * served once more while the wrapper regenerates it. An expired tag wins over a Stale one,
@@ -123,20 +123,21 @@ export interface TagManifest {
    * dropped.
    *
    * `false` means the refresh could not be merged — no refresh has landed in this copy
-   * yet, or its clock is behind the watermark because the Redis host stepped its clock
-   * back — and that the copy was left exactly as it was, so that the caller takes a full
-   * read in that same call rather than on the next one.
+   * yet, or its clock is behind the watermark, which is what a read taken across a
+   * backward step of the Redis host's wall clock brings back (ADR 0003) — and that the
+   * copy was left exactly as it was, so that the caller takes a full read in that same
+   * call rather than on the next one.
    */
   mergeWith(refresh: TagRefresh): boolean;
   /**
-   * The log score a watermark read must start at: the last refresh's server clock less a
-   * one second margin, which absorbs a backwards step of the Redis clock small enough to
-   * leave the watermark standing. It is `undefined` while no refresh has landed, which is
+   * The log score a watermark read must start at: the last refresh's Handler clock less a
+   * one second margin, which absorbs a backwards step of that clock small enough to leave
+   * the watermark standing. It is `undefined` while no refresh has landed, which is
    * what makes the first read of a process a full one.
    */
   since(): Timestamp | undefined;
   /**
-   * The Redis clock as of now, or `undefined` while no refresh has landed in this
+   * The Handler clock as of now, or `undefined` while no refresh has landed in this
    * process. It is the last refresh's instant plus the time elapsed since, measured on a
    * monotonic clock so that a step of the app's clock cannot move it.
    */

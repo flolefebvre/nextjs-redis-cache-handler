@@ -59,8 +59,15 @@ The record, per tag, of when it was last made stale and when it was last made ex
 Redis; each instance keeps a local copy refreshed before every request.
 _Avoid_: tag index, tag registry
 
+**Handler clock**:
+The clock every instant this handler compares is stamped on: one value per Key prefix, held in the tag slot,
+never below the last stamp issued and strictly increasing at each one, so that a backward step of the Redis
+host's wall clock cannot reorder an Entry and a tag event.
+_Avoid_: logical clock, Lamport clock, Redis clock (that is `TIME`, the wall clock the Handler clock is floored
+by)
+
 **Write time**:
-The instant, on the Redis clock, at which an Entry's generation started; the only value tag events are compared
+The instant, on the Handler clock, at which an Entry's generation started; the only value tag events are compared
 against. Derived at write from the Entry's age, so it is independent of the app host's clock.
 _Avoid_: timestamp (that is Next.js's app-clock field on the Entry, stored and returned unchanged)
 

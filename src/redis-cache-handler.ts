@@ -77,13 +77,20 @@ type ReadOutcome =
  * and is bounded only from the read it then makes.
  *
  * Giving up is not cancelling: a write that ran out of time may still reach the store
- * afterwards, and is stamped as of its landing — the Redis clock then, less the Entry's
+ * afterwards, and is stamped as of its landing — the Handler clock then, less the Entry's
  * age — so a tag event issued meanwhile is compared against that later Write time.
  *
  * A `refreshTags` reads only the tag events written since the last one, so its cost does
  * not grow with the number of tags an app has ever revalidated. The whole Tag manifest is
  * read again on the first call of the process, on the first call after the client
- * reconnected, and when the Redis clock has stepped backwards.
+ * reconnected, and when a read comes back with a Handler clock behind the watermark —
+ * what the Redis host's wall clock stepping backwards leaves behind (ADR 0003).
+ *
+ * Every instant this handler compares — an Entry's Write time, a tag event's, and the
+ * clock a refresh brings back — is stamped on that Handler clock, one non-decreasing
+ * value per Key prefix, so that a backward step of the host's wall clock can never make a
+ * tag event precede an Entry written before it. A `set` therefore makes two round trips,
+ * one for the stamp and one for the write; a `get` still makes one and stamps nothing.
  *
  * Every outcome of a `get` and of a `set` is reported to `onEvent`, and every failure to
  * `onError` with the operation it happened in. An Entry the wrapper would read as expired

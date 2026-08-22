@@ -7,8 +7,8 @@ export type BufferedEntry = Omit<CacheEntry, "value"> & { value: Uint8Array };
 export type StoredEntry = BufferedEntry & { writeTime: Timestamp };
 
 /**
- * The hash field holding the Write time. Written by the write script, which is the
- * only place the value is computed, and read back here.
+ * The hash field holding the Write time. Written by the write script, the only place the
+ * value is stored, and read back here.
  */
 export const WRITE_TIME_FIELD = "writeTime";
 
@@ -21,7 +21,8 @@ const REVALIDATE_FIELD = "revalidate";
 
 /**
  * The Entry as a flat list of hash field names and values, in the order `HSET` takes
- * them. The Write time is absent: the write script appends it from the server clock.
+ * them. The Write time is absent: the write script prepends the one its caller took from
+ * the Handler clock.
  */
 export function encodeEntryFields(entry: BufferedEntry): (string | Buffer)[] {
   return [
