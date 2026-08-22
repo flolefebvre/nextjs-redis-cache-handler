@@ -37,6 +37,8 @@ const LATE_MS = 500;
 
 const SETTLE_MS = 50;
 
+const STALL_MS = 250;
+
 const RECOVERY_MS = 30_000;
 
 const CONTAINER_TIMEOUT = 120_000;
@@ -98,11 +100,14 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
     return { outcome, waitedMs };
   }
 
-  /** How an invalidation issued against a stalled server settled, once it answers again. */
+  /**
+   * How an invalidation issued against a stalled server settled, the server answering
+   * again after longer than one attempt is given and well inside the retry budget.
+   */
   async function invalidatedWhileStalled(other: CacheHandler): Promise<"resolved" | "rejected"> {
     const { outcome } = await whileStalled(async () => {
       const invalidating = other.updateTags(["posts"]);
-      await wait(SETTLE_MS);
+      await wait(STALL_MS);
       await redis.unpause();
 
       return settling(invalidating);
