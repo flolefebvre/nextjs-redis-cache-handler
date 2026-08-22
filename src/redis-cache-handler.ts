@@ -127,7 +127,7 @@ export function createRedisCacheHandler(
 
     if (since !== undefined) {
       const events = await readTagManifestSince(connected, keyPrefix, since);
-      if (manifest.mergeWith(events)) {
+      if (events !== undefined && manifest.mergeWith(events)) {
         readReconnects = reconnects;
 
         return;

@@ -84,7 +84,12 @@ test("ten concurrent refreshes are one read round trip, and all of them resolve"
   );
 
   expect(refreshes).toEqual(Array.from({ length: 10 }, () => "done"));
-  expect(tagCommandNames(await stream.settled(), keyPrefix)).toEqual(["EVALSHA", "ZRANGE"]);
+  expect(tagCommandNames(await stream.settled(), keyPrefix)).toEqual([
+    "EVALSHA",
+    "ZCARD",
+    "HLEN",
+    "ZRANGE",
+  ]);
 });
 
 test("a tag event too old to affect any living Entry stops hiding one", async () => {
@@ -113,7 +118,24 @@ test("both reads of the Tag manifest stay within the portable command set", asyn
   await instanceB.refreshTags();
 
   const names = new Set(tagCommandNames(await stream.settled(), keyPrefix));
-  expect(names).toEqual(new Set(["EVALSHA", "HGETALL", "ZRANGE", "HMGET", "HSET", "ZADD"]));
+  expect(names).toEqual(
+    new Set(["EVALSHA", "HGETALL", "ZCARD", "HLEN", "ZRANGE", "HMGET", "HSET", "ZADD"]),
+  );
+});
+
+test("a Tag manifest whose log was lost is read whole again", async () => {
+  const { keyPrefix, instanceA, instanceB } = instancePair();
+  const server = await serverClient();
+  await storeBefore(instanceA, "posts", { tags: ["posts"] });
+  await instanceB.refreshTags();
+  await instanceA.updateTags(["posts"]);
+  await server.del(`${keyPrefix}{tags}:log`);
+  const stream = await commandStream(keyPrefix);
+
+  await instanceB.refreshTags();
+
+  expect(await instanceB.get("posts", [])).toBeUndefined();
+  expect(tagCommandNames(await stream.settled(), keyPrefix)).toContain("HGETALL");
 });
 
 test("a handler whose client reconnected reads the whole manifest and sees what it missed", async () => {

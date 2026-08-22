@@ -43,12 +43,15 @@ export function readTagManifest(client: CacheClient, keyPrefix: string): Promise
  * The tag events written since `since`, with their manifest values and the server clock
  * they were read at, in one round trip. `since` is a log score, and the reply carries
  * every member scored at or after it.
+ *
+ * `undefined` means the log holds fewer tags than the manifest does, so it lost events
+ * the manifest still holds and only a full read can bring them back.
  */
 export function readTagManifestSince(
   client: CacheClient,
   keyPrefix: string,
   since: Timestamp,
-): Promise<TagRefresh> {
+): Promise<TagRefresh | undefined> {
   const keys = tagKeys(keyPrefix);
 
   return runScript(

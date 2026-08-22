@@ -55,6 +55,7 @@ const HMGET_CHUNK = 1000;
 
 const READ_TAG_MANIFEST_SINCE = `
 ${SERVER_NOW}
+if redis.call('ZCARD', KEYS[2]) < redis.call('HLEN', KEYS[1]) then return false end
 local tags = redis.call('ZRANGE', KEYS[2], ARGV[1], '+inf', 'BYSCORE')
 local fields = {}
 for start = 1, #tags, ${HMGET_CHUNK} do
@@ -189,10 +190,18 @@ export const readTagManifestScript: CacheScript<TagRefresh> = defineCacheScript(
  * pruned between the `ZRANGE` and the `HMGET` carries no value and is left out entirely:
  * a tag the shared copy no longer holds is one no living Entry can be affected by.
  *
+ * The read rests on the invariant the write script keeps: every tag of the hash is a
+ * member of the log, so the two always hold the same number of tags. A log holding fewer
+ * than the hash was evicted or deleted, and an empty reply would then be indistinguishable
+ * from "no events since the watermark" while the hash still holds events never read. The
+ * script answers nothing at all in that case, so that the caller reads the manifest whole
+ * instead of advancing its watermark past them.
+ *
  * Keys: the Tag manifest hash and its log. Arguments: the log score to read from.
  */
-export const readTagManifestSinceScript: CacheScript<TagRefresh> = defineCacheScript(
+export const readTagManifestSinceScript: CacheScript<TagRefresh | undefined> = defineCacheScript(
   READ_TAG_MANIFEST_SINCE,
   2,
-  parseTagRefresh,
+  (reply: unknown): TagRefresh | undefined =>
+    reply === null || reply === undefined ? undefined : parseTagRefresh(reply),
 );
