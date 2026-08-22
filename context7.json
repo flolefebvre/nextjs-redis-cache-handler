@@ -1,0 +1,27 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "projectTitle": "@flefebvre/nextjs-redis-cache-handler",
+  "description": "Redis/Valkey-backed cache handler for Next.js Cache Components ('use cache'), so that every instance of a multi-instance deployment shares the same cached output and sees the same revalidation events.",
+  "branch": "main",
+  "folders": [],
+  "excludeFolders": [
+    ".github",
+    "dist",
+    "docs/adr",
+    "docs/agents",
+    "docs/codebase",
+    "docs/research",
+    "node_modules",
+    "scripts",
+    "src",
+    "tests"
+  ],
+  "excludeFiles": ["AGENTS.md", "CLAUDE.md"],
+  "rules": [
+    "This package targets the plural `cacheHandlers` config (Next.js 16.3 Cache Components, `'use cache'`), not the singular `cacheHandler` used for the ISR cache, `fetch()` caching or `unstable_cache()`.",
+    "ESM only, Node >= 22.12. The published entry points are the package root and the `/handler` subpath; nothing else is exported.",
+    "`next` is a peer dependency and is never imported at runtime: the handler interface is vendored and guarded by a type-only contract test.",
+    "The key prefix is the only isolation between apps sharing one server. Redis databases are never used.",
+    "The package is under construction: the entry points exist but throw, and the public options are not settled yet."
+  ]
+}

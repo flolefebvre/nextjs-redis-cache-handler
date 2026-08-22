@@ -1,0 +1,8 @@
+{
+  "path": ["src", "scripts", "tests"],
+  "ignore": ["**/node_modules/**", "dist/**"],
+  "format": ["typescript"],
+  "minTokens": 50,
+  "exitCode": 1,
+  "reporters": ["consoleFull"]
+}
