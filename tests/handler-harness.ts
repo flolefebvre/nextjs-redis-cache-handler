@@ -331,3 +331,22 @@ export async function seedHandlerClock(
 ): Promise<void> {
   await server.set(`${keyPrefix}{tags}:clock`, String(Math.floor(at)));
 }
+
+/**
+ * Move the Handler clock on past the last stamp it issued, by the given margin: what time
+ * passing does to it, done at once. A test that needs an Entry to be later than a tag event
+ * moves the clock on past that event rather than waiting for it — an Entry is stamped
+ * `stamp - age`, and while the clock is held at its floor by a backward step of the host's
+ * wall clock no wait moves it at all (ADR 0003). It throws when nothing has stamped this Key
+ * prefix yet: that is a bug in the test, not a margin of zero.
+ */
+export async function moveHandlerClockOn(
+  server: ServerClient,
+  keyPrefix: string,
+  byMs: number,
+): Promise<void> {
+  const stamped = await handlerClock(server, keyPrefix);
+  if (stamped === undefined) throw new Error("the Handler clock has issued no stamp to move on");
+
+  await seedHandlerClock(server, keyPrefix, stamped + byMs);
+}
