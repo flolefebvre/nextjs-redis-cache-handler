@@ -30,6 +30,7 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
+      "edge-light": "./dist/index.edge.js",
       "default": "./dist/index.js"
     },
     "./handler": {
