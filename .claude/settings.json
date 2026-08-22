@@ -2,6 +2,9 @@
   "enabledPlugins": {
     "mattpocock-skills@claude-plugins-official": true
   },
+  "worktree": {
+    "bgIsolation": "none"
+  },
   "permissions": {
     "allow": [
       "Bash(git status:*)",
@@ -29,6 +32,9 @@
       "Bash(git remote:*)",
       "Bash(git worktree:*)",
       "Bash(git config:*)",
+      "Bash(git ls-tree:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git check-ignore:*)",
 
       "Bash(gh pr list:*)",
       "Bash(gh pr view:*)",
@@ -36,6 +42,9 @@
       "Bash(gh pr checks:*)",
       "Bash(gh pr status:*)",
       "Bash(gh pr create:*)",
+      "Bash(gh pr edit:*)",
+      "Bash(gh pr ready:*)",
+      "Bash(gh pr checkout:*)",
       "Bash(gh pr comment:*)",
       "Bash(gh pr merge:*)",
       "Bash(gh issue list:*)",
@@ -44,17 +53,62 @@
       "Bash(gh issue edit:*)",
       "Bash(gh issue close:*)",
       "Bash(gh issue comment:*)",
+      "Bash(gh issue develop:*)",
+      "Bash(gh label list:*)",
       "Bash(gh run list:*)",
       "Bash(gh run view:*)",
       "Bash(gh run watch:*)",
+      "Bash(gh run rerun:*)",
+      "Bash(gh workflow list:*)",
+      "Bash(gh workflow view:*)",
       "Bash(gh repo view:*)",
       "Bash(gh search:*)",
-      "Bash(gh api:*)"
+      "Bash(gh api:*)",
+
+      "Bash(pnpm:*)",
+      "Bash(npm:*)",
+      "Bash(npx:*)",
+      "Bash(node:*)",
+      "Bash(tsx:*)",
+      "Bash(docker:*)",
+      "Bash(redis-cli:*)",
+
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(sed:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(wc:*)",
+      "Bash(diff:*)",
+      "Bash(jq:*)",
+      "Bash(sort:*)",
+      "Bash(uniq:*)",
+      "Bash(tr:*)",
+      "Bash(cut:*)",
+      "Bash(mkdir:*)",
+      "Bash(cp:*)",
+      "Bash(mv:*)",
+      "Bash(touch:*)",
+      "Bash(chmod:*)",
+      "Bash(echo:*)",
+      "Bash(printf:*)",
+      "Bash(pwd:*)",
+      "Bash(which:*)",
+      "Bash(env:*)",
+      "Bash(curl:*)",
+      "Bash(lsof:*)",
+      "Bash(ps:*)"
     ],
     "deny": [
       "Bash(gh repo delete:*)",
       "Bash(gh release:*)",
-      "Bash(gh auth token:*)"
+      "Bash(gh auth token:*)",
+      "Bash(npm publish:*)",
+      "Bash(pnpm publish:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)"
     ]
   }
 }
