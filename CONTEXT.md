@@ -48,6 +48,11 @@ The record, per tag, of when it was last made stale and when it was last made ex
 Redis; each instance keeps a local copy refreshed before every request.
 _Avoid_: tag index, tag registry
 
+**Write time**:
+The instant, on the Redis clock, at which an Entry's generation started; the only value tag events are compared
+against. Derived at write from the Entry's age, so it is independent of the app host's clock.
+_Avoid_: timestamp (that is Next.js's app-clock field on the Entry, stored and returned unchanged)
+
 **Key prefix**:
 The Redis key namespace under which one app's Entries and Tag manifest live. All instances of one app share it;
 two apps never do. The only isolation mechanism between apps on one Redis.
