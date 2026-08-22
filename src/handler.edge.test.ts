@@ -1,28 +1,12 @@
 import { expect, test, vi } from "vitest";
 
+import { entryOf, type Equals, HANDLER_METHODS as METHODS } from "../tests/unit-harness.js";
 import handler from "./handler.edge.js";
-import type { CacheEntry } from "./types.js";
-
-type Equals<A, B> =
-  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
-
-const METHODS = ["get", "set", "refreshTags", "getExpiration", "updateTags"];
 
 const edgeMatchesNode: Equals<
   typeof import("./handler.edge.js"),
   typeof import("./handler.node.js")
 > = true;
-
-function entryOf(): Promise<CacheEntry> {
-  return Promise.resolve({
-    value: new ReadableStream<Uint8Array>(),
-    tags: [],
-    stale: 0,
-    timestamp: Date.now(),
-    expire: 900,
-    revalidate: 60,
-  });
-}
 
 test("the Edge target is one plain object with the five methods and no default property", () => {
   expect(typeof handler).toBe("object");

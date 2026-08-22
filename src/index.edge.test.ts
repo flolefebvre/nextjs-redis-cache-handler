@@ -1,11 +1,7 @@
 import { expect, test, vi } from "vitest";
 
+import { type Equals, HANDLER_METHODS as METHODS } from "../tests/unit-harness.js";
 import { createRedisCacheHandler, handlerPath, optionsFromEnv } from "./index.edge.js";
-
-type Equals<A, B> =
-  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
-
-const METHODS = ["get", "set", "refreshTags", "getExpiration", "updateTags"];
 
 const edgeMatchesNode: Equals<typeof import("./index.edge.js"), typeof import("./index.js")> = true;
 

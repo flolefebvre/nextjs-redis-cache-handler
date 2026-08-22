@@ -2,17 +2,7 @@ import { createDisabledHandler, EDGE_UNSUPPORTED } from "./disabled-handler.js";
 import type { RedisCacheHandlerOptions } from "./options.js";
 import type { CacheHandler } from "./types.js";
 
-export type { CacheEntry, CacheHandler, Timestamp } from "./types.js";
-export type { RedisCacheHandlerOptions } from "./options.js";
-export type { CacheClient, CacheClientEvent, CacheCommands } from "./client.js";
-export type {
-  CacheErrorHook,
-  CacheErrorOp,
-  CacheEvent,
-  CacheEventHook,
-  CacheMissReason,
-  CacheSkipReason,
-} from "./events.js";
+export type * from "./public-types.js";
 export { optionsFromEnv } from "./env.js";
 
 /**

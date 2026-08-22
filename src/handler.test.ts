@@ -2,7 +2,8 @@ import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
 import { afterEach, expect, test, vi } from "vitest";
 
-import type { CacheEntry, CacheHandler } from "./types.js";
+import { entryOf, HANDLER_METHODS as METHODS } from "../tests/unit-harness.js";
+import type { CacheHandler } from "./types.js";
 
 const VARIABLES = [
   "REDIS_URL",
@@ -13,8 +14,6 @@ const VARIABLES = [
   "NEXT_REDIS_CACHE_UPDATE_TAGS_TIMEOUT",
   "NEXT_REDIS_CACHE_DEBUG",
 ];
-
-const METHODS = ["get", "set", "refreshTags", "getExpiration", "updateTags"];
 
 const UNREACHABLE = "redis://127.0.0.1:6379";
 
@@ -30,17 +29,6 @@ async function loadEntry(env: Record<string, string> = {}): Promise<ClosableHand
   vi.resetModules();
 
   return (await import("./handler.node.js")).default;
-}
-
-function entryOf(): Promise<CacheEntry> {
-  return Promise.resolve({
-    value: new ReadableStream<Uint8Array>(),
-    tags: [],
-    stale: 0,
-    timestamp: Date.now(),
-    expire: 900,
-    revalidate: 60,
-  });
 }
 
 afterEach(() => {

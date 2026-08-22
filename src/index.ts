@@ -1,16 +1,6 @@
 import { fileURLToPath } from "node:url";
 
-export type { CacheEntry, CacheHandler, Timestamp } from "./types.js";
-export type { RedisCacheHandlerOptions } from "./options.js";
-export type { CacheClient, CacheClientEvent, CacheCommands } from "./client.js";
-export type {
-  CacheErrorHook,
-  CacheErrorOp,
-  CacheEvent,
-  CacheEventHook,
-  CacheMissReason,
-  CacheSkipReason,
-} from "./events.js";
+export type * from "./public-types.js";
 export { createRedisCacheHandler } from "./redis-cache-handler.js";
 export { optionsFromEnv } from "./env.js";
 
