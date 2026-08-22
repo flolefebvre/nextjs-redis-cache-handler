@@ -1,6 +1,7 @@
 import { createCacheClient } from "./client.js";
 import type { BufferedEntry, StoredEntry } from "./entry-hash.js";
 import { entryAge, entryKey, entryTtlSeconds, readEntry, writeEntry } from "./entry-store.js";
+import { createReporter, type CacheEvent } from "./events.js";
 import { DEFAULT_KEY_PREFIX, DEFAULT_MAX_TTL, type RedisCacheHandlerOptions } from "./options.js";
 import { createTagManifest } from "./tag-manifest.js";
 import { readTagManifest, writeTagEvents } from "./tag-store.js";
@@ -11,7 +12,7 @@ const STALE_REVALIDATE = -1;
 /**
  * What a read of one key came to, before it is flattened into what the interface returns:
  * an Entry to serve, an Entry to serve once more while the wrapper regenerates it, or a
- * miss and why. The reason is what the hooks of a later version report.
+ * miss and why. It maps one to one to the event `onEvent` receives.
  */
 type ReadOutcome =
   | { kind: "hit" | "stale"; entry: CacheEntry }
@@ -39,7 +40,8 @@ export function createRedisCacheHandler(
 ): CacheHandler & { close(): Promise<void> } {
   const keyPrefix = options.keyPrefix ?? DEFAULT_KEY_PREFIX;
   const maxTtl = options.maxTtl ?? DEFAULT_MAX_TTL;
-  const client = createCacheClient(options.url);
+  const reporter = createReporter(options);
+  const client = createCacheClient(options.url, reporter.fail);
   const pendingSets = new Map<string, Promise<void>>();
   const manifest = createTagManifest();
   let refreshing: Promise<void> | undefined;
@@ -82,7 +84,9 @@ export function createRedisCacheHandler(
       const stale = verdict === "stale" || isPastRevalidate(stored, Date.now());
 
       return { kind: stale ? "stale" : "hit", entry: entryOf(stored, stale) };
-    } catch {
+    } catch (error) {
+      reporter.fail(error, "get");
+
       return { kind: "miss", reason: "unavailable" };
     }
   }
@@ -95,12 +99,16 @@ export function createRedisCacheHandler(
 
   return {
     async get(cacheKey: string, softTags: string[]): Promise<undefined | CacheEntry> {
+      const startedAt = performance.now();
       const outcome = await read(cacheKey, softTags);
+      reporter.emit(eventOf(outcome, cacheKey, performance.now() - startedAt));
 
       return outcome.kind === "miss" ? undefined : outcome.entry;
     },
     set(cacheKey: string, pendingEntry: Promise<CacheEntry>): Promise<void> {
-      const inFlight = store(cacheKey, pendingEntry).catch(() => undefined);
+      const inFlight = store(cacheKey, pendingEntry).catch((error: unknown) => {
+        reporter.fail(error, "set");
+      });
       pendingSets.set(cacheKey, inFlight);
 
       return inFlight.finally(() => {
@@ -109,7 +117,9 @@ export function createRedisCacheHandler(
     },
     refreshTags(): Promise<void> {
       refreshing ??= refresh()
-        .catch(() => undefined)
+        .catch((error: unknown) => {
+          reporter.fail(error, "refreshTags");
+        })
         .finally(() => {
           refreshing = undefined;
         });
@@ -122,14 +132,26 @@ export function createRedisCacheHandler(
     async updateTags(tags: string[], durations?: { expire?: number }): Promise<void> {
       if (tags.length === 0) return;
 
-      const connected = await client.connected();
+      try {
+        const connected = await client.connected();
 
-      await writeTagEvents(connected, keyPrefix, tags, durations, maxTtl);
+        await writeTagEvents(connected, keyPrefix, tags, durations, maxTtl);
+      } catch (error) {
+        reporter.fail(error, "updateTags");
+
+        throw error;
+      }
     },
     close(): Promise<void> {
       return client.close();
     },
   };
+}
+
+function eventOf(outcome: ReadOutcome, key: string, durationMs: number): CacheEvent {
+  return outcome.kind === "miss"
+    ? { type: "miss", reason: outcome.reason, key, durationMs }
+    : { type: outcome.kind, key, durationMs };
 }
 
 function isPastRevalidate(stored: StoredEntry, appNow: Timestamp): boolean {
