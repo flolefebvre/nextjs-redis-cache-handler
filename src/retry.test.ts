@@ -15,6 +15,10 @@ const MARGIN = 120;
 
 const WRITTEN = "written";
 
+const SHORT_BUDGET = 1;
+
+const OUTLASTING = SHORT_BUDGET + 1;
+
 function budget(overrides: Partial<RetryBudget> = {}): RetryBudget {
   return {
     budgetMs: BUDGET,
@@ -38,6 +42,21 @@ function succeeding(attempts: Attempts): () => Promise<string> {
     attempts.mark();
 
     return Promise.resolve(WRITTEN);
+  };
+}
+
+/**
+ * An attempt that outlasts `OUTLASTING` milliseconds before it rejects, spinning rather
+ * than awaiting: a blocked event loop leaves the attempt's own deadline unable to fire,
+ * so the rejection is the one this hands back.
+ */
+function outlasting(attempts: Attempts, failure: Error): () => Promise<never> {
+  return () => {
+    attempts.mark();
+    const until = performance.now() + OUTLASTING;
+    while (performance.now() < until);
+
+    return Promise.reject(failure);
   };
 }
 
@@ -92,7 +111,11 @@ describe("withRetries", () => {
   test("runs one attempt even on a budget too short to schedule anything in", async () => {
     const attempts = starts();
 
-    const returned = await withRetries("updateTags", budget({ budgetMs: 1 }), succeeding(attempts));
+    const returned = await withRetries(
+      "updateTags",
+      budget({ budgetMs: SHORT_BUDGET }),
+      succeeding(attempts),
+    );
 
     expect(returned).toBe(WRITTEN);
     expect(attempts.at).toHaveLength(1);
@@ -102,11 +125,11 @@ describe("withRetries", () => {
     const attempts = starts();
     const failure = new Error("the store said no");
 
-    const retried = withRetries("updateTags", budget({ budgetMs: 1 }), () => {
-      attempts.mark();
-
-      return Promise.reject(failure);
-    });
+    const retried = withRetries(
+      "updateTags",
+      budget({ budgetMs: SHORT_BUDGET }),
+      outlasting(attempts, failure),
+    );
 
     await expect(retried).rejects.toBeInstanceOf(GaveUpError);
     expect(attempts.at).toHaveLength(1);
