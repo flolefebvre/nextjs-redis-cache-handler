@@ -27,7 +27,7 @@ describe.skipIf(providedRedisUrl() !== undefined)("the outage server", () => {
     const client = createClient({ url: redis.url, disableOfflineQueue: true });
     client.on("error", () => undefined);
     await client.connect();
-    await client.set(KEY, "before");
+    await client.set(KEY, "answered");
 
     await redis.pause();
     const stalled = client.get(KEY);
@@ -35,16 +35,18 @@ describe.skipIf(providedRedisUrl() !== undefined)("the outage server", () => {
     await redis.unpause();
 
     expect(raced).toBe("still stalled");
-    expect(await stalled).toBe("before");
+    expect(await stalled).toBe("answered");
 
     await redis.stop();
     await expect(client.get(KEY)).rejects.toThrowError();
+    await expect(createClient({ url: redis.url }).connect()).rejects.toThrowError();
 
     await redis.start();
     const back = createClient({ url: redis.url });
     back.on("error", () => undefined);
     await back.connect();
-    expect(await back.get(KEY)).toBe("before");
+    await back.set(KEY, "answered again");
+    expect(await back.get(KEY)).toBe("answered again");
     await back.close();
     client.destroy();
   }, 120_000);

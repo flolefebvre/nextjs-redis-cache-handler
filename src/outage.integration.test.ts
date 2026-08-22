@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, onTestFinished, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, onTestFinished, test, vi } from "vitest";
 
 import {
   bytesOf,
@@ -6,6 +6,7 @@ import {
   freshPrefix,
   opsOf,
   recording,
+  tick,
   VALUE,
   wait,
 } from "../tests/handler-harness.js";
@@ -30,6 +31,10 @@ const SETTLE_MS = 50;
 const LATE_MS = 500;
 
 const PATIENT_TIMEOUT = 10_000;
+
+const PROMPT_MS = 500;
+
+const RECOVERY_MS = 30_000;
 
 describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
   let redis: OutageRedis;
@@ -56,6 +61,16 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
     expect(unhandled).toEqual([]);
   });
 
+  async function paused(): Promise<void> {
+    await redis.pause();
+    onTestFinished(() => redis.unpause());
+  }
+
+  async function stopped(): Promise<void> {
+    await redis.stop();
+    onTestFinished(() => redis.start());
+  }
+
   function handler(keyPrefix: string, overrides: Partial<RedisCacheHandlerOptions> = {}) {
     const built = createRedisCacheHandler({ url: redis.url, keyPrefix, ...overrides });
     onTestFinished(() => built.close());
@@ -73,7 +88,7 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
       await instance.refreshTags();
       expect(await instance.get("stalled-read", [])).toBeDefined();
 
-      await redis.pause();
+      await paused();
       const startedAt = Date.now();
       const read = await instance.get("stalled-read", []);
       const elapsed = Date.now() - startedAt;
@@ -94,7 +109,7 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
       const instance = handler(freshPrefix(), { operationTimeout: TIMEOUT, ...recorded.hooks });
       await instance.refreshTags();
 
-      await redis.pause();
+      await paused();
       const startedAt = Date.now();
       await expect(
         instance.set("stalled-write", Promise.resolve(entryOf())),
@@ -116,7 +131,7 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
       const instance = handler(freshPrefix(), { operationTimeout: TIMEOUT, ...recorded.hooks });
       await instance.refreshTags();
 
-      await redis.pause();
+      await paused();
       const startedAt = Date.now();
       await expect(instance.updateTags(["posts"])).rejects.toThrowError();
       const elapsed = Date.now() - startedAt;
@@ -135,7 +150,7 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
       await instance.set("recovered", Promise.resolve(entryOf()));
       await instance.refreshTags();
 
-      await redis.pause();
+      await paused();
       expect(await instance.get("recovered", [])).toBeUndefined();
       await redis.unpause();
 
@@ -157,7 +172,7 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
       await other.updateTags(["posts"]);
       await instance.refreshTags();
 
-      await redis.pause();
+      await paused();
       const startedAt = Date.now();
       await expect(instance.refreshTags()).resolves.toBeUndefined();
       const elapsed = Date.now() - startedAt;
@@ -181,7 +196,7 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
       await instance.refreshTags();
       expect(await instance.get("invalidated-late", [])).toBeDefined();
 
-      await redis.pause();
+      await paused();
       const invalidating = other.updateTags(["posts"]);
       await wait(SETTLE_MS);
       await redis.unpause();
@@ -202,7 +217,7 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
       const other = handler(keyPrefix);
       await other.set("late-refresh", Promise.resolve(entryOf()));
 
-      await redis.pause();
+      await paused();
       await expect(instance.refreshTags()).resolves.toBeUndefined();
       await redis.unpause();
       await wait(LATE_MS);
@@ -211,6 +226,98 @@ describe.skipIf(providedRedisUrl() !== undefined)("under an outage", () => {
       expect(lastMiss(recorded.events)).toBe("unavailable");
       await instance.refreshTags();
       expect(await instance.get("late-refresh", [])).toBeDefined();
+    },
+  );
+  test(
+    "a read and a write against a server that is down give up at once, and are reported",
+    { timeout: CONTAINER_TIMEOUT },
+    async () => {
+      const recorded = recording();
+      const instance = handler(freshPrefix(), {
+        operationTimeout: PATIENT_TIMEOUT,
+        ...recorded.hooks,
+      });
+      await instance.set("server-down", Promise.resolve(entryOf()));
+      await instance.refreshTags();
+
+      await stopped();
+      const startedAt = Date.now();
+      const read = await instance.get("server-down", []);
+      await expect(
+        instance.set("server-down", Promise.resolve(entryOf())),
+      ).resolves.toBeUndefined();
+      const elapsed = Date.now() - startedAt;
+      await redis.start();
+
+      expect(read).toBeUndefined();
+      expect(lastMiss(recorded.events)).toBe("unavailable");
+      expect(elapsed).toBeLessThan(PROMPT_MS);
+      expect(opsOf(recorded.errors)).toContain("get");
+      expect(opsOf(recorded.errors)).toContain("set");
+      expect(opsOf(recorded.errors)).toContain("connect");
+    },
+  );
+
+  test(
+    "a handler that never read the manifest misses until the server is up, then recovers",
+    { timeout: CONTAINER_TIMEOUT },
+    async () => {
+      const recorded = recording();
+      await stopped();
+      const instance = handler(freshPrefix(), { operationTimeout: TIMEOUT, ...recorded.hooks });
+
+      await expect(instance.refreshTags()).resolves.toBeUndefined();
+      expect(await instance.get("never-read", [])).toBeUndefined();
+      expect(lastMiss(recorded.events)).toBe("unavailable");
+      const startedAt = Date.now();
+      await expect(instance.refreshTags()).resolves.toBeUndefined();
+      expect(Date.now() - startedAt).toBeLessThan(PROMPT_MS);
+      expect(opsOf(recorded.errors)).toContain("refreshTags");
+      expect(opsOf(recorded.errors)).toContain("connect");
+
+      await redis.start();
+
+      await vi.waitUntil(
+        async () => {
+          await instance.refreshTags();
+          await instance.set("never-read", Promise.resolve(entryOf()));
+
+          return (await instance.get("never-read", [])) !== undefined;
+        },
+        { timeout: RECOVERY_MS, interval: SETTLE_MS },
+      );
+    },
+  );
+
+  test(
+    "an invalidation written while a handler was down is seen on its first refresh after",
+    { timeout: CONTAINER_TIMEOUT },
+    async () => {
+      const keyPrefix = freshPrefix();
+      const recorded = recording();
+      const instance = handler(keyPrefix, { operationTimeout: TIMEOUT, ...recorded.hooks });
+      await instance.refreshTags();
+
+      await stopped();
+      expect(await instance.get("re-synced", [])).toBeUndefined();
+      await redis.start();
+      const other = handler(keyPrefix, { operationTimeout: PATIENT_TIMEOUT });
+      await other.set("re-synced", Promise.resolve(entryOf({ tags: ["posts"] })));
+      await tick();
+      await other.updateTags(["posts"]);
+
+      await vi.waitUntil(
+        async () => {
+          await instance.get("re-synced-probe", []);
+
+          return lastMiss(recorded.events) === "absent";
+        },
+        { timeout: RECOVERY_MS, interval: SETTLE_MS },
+      );
+      await instance.refreshTags();
+
+      expect(await instance.get("re-synced", [])).toBeUndefined();
+      expect(lastMiss(recorded.events)).toBe("expired");
     },
   );
 });

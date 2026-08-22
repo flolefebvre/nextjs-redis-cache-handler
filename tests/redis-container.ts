@@ -3,6 +3,7 @@ import {
   GenericContainer,
   Wait,
   getContainerRuntimeClient,
+  type ContainerRuntimeClient,
   type StartedTestContainer,
 } from "testcontainers";
 
@@ -13,6 +14,8 @@ import {
 export const DEFAULT_TEST_IMAGE = "valkey/valkey:8";
 
 const REDIS_PORT = 6379;
+
+type RunningContainer = ReturnType<ContainerRuntimeClient["container"]["getById"]>;
 
 /**
  * The image to start: `CACHE_TEST_IMAGE` when it holds something, the default
@@ -64,56 +67,77 @@ export async function startRedisContainer(image: string): Promise<RunningRedis> 
  * the server every other worker talks to would stall the whole suite.
  */
 export interface OutageRedis {
-  /** Where it answers, on a host port of its own so that the URL survives a stop. */
+  /** Where it answers, on a host port of its own that every state of it keeps. */
   url: string;
   /** Freeze the server: connections stay open, commands never get a reply. */
   pause(): Promise<void>;
-  /** Unfreeze it: the commands that were in flight get their reply. */
+  /** Unfreeze it: the commands that were in flight get their reply. Does nothing if it is running. */
   unpause(): Promise<void>;
-  /** Take it down: the port refuses connections, and what it held is kept. */
+  /** Take it down: the port refuses connections, and nothing it held survives. */
   stop(): Promise<void>;
-  /** Bring the same server back on the same port, with everything it held. */
+  /** Put a server back on the same port, empty. Does nothing if one is already up. */
   start(): Promise<void>;
-  /** Remove it, whatever state it is in. */
+  /** Leave nothing behind, whatever state it is in. */
   remove(): Promise<void>;
 }
 
 /**
  * Start a server for one test file to break. The host port is chosen here rather than
- * left to Docker: a stopped container comes back on a new random mapping, and a handler
- * configured with a URL cannot follow it.
+ * left to Docker, because a server that goes down and comes back has to answer at the
+ * same URL: a handler configured with one cannot follow a new random mapping.
+ *
+ * Down means removed, not stopped. A stopped container keeps the runtime's port
+ * forwarding bound on some hosts, where it accepts a connection and then answers
+ * nothing — which is stalled, not down, and hides the very difference these tests are
+ * about. A removed container releases the port, so a connection is refused as promptly
+ * on a developer's machine as in CI. Nothing a removed server held comes back with the
+ * next one: a test writes what it needs after `start`.
  *
  * `pause` goes through the container runtime Testcontainers itself talks to, because a
  * started container exposes no pause of its own. It is the only way to reach a stalled
  * server — a socket that is open with nothing answering — which is the only state that
  * makes an operation hit its deadline rather than fail outright.
+ *
+ * Coming back is idempotent, on purpose: a test whose assertion fails before it put the
+ * server back would otherwise hand the next one a server that is down, and a cleanup that
+ * puts it back unconditionally would fail on a server that is already up.
  */
 export async function startOutageRedis(image: string): Promise<OutageRedis> {
   const port = await freeHostPort();
-  const container = await new GenericContainer(image)
-    .withExposedPorts({ container: REDIS_PORT, host: port })
-    .withWaitStrategy(Wait.forLogMessage(/Ready to accept connections/))
-    .start();
+  const definition = (): GenericContainer =>
+    new GenericContainer(image)
+      .withExposedPorts({ container: REDIS_PORT, host: port })
+      .withWaitStrategy(Wait.forLogMessage(/Ready to accept connections/));
   const runtime = await getContainerRuntimeClient();
-  const runningContainer = runtime.container.getById(container.getId());
+  let container: StartedTestContainer | undefined = await definition().start();
+
+  const running = (): RunningContainer => {
+    if (container === undefined) throw new Error("the outage server is down");
+
+    return runtime.container.getById(container.getId());
+  };
+
+  const down = async (): Promise<void> => {
+    const stopping = container;
+    container = undefined;
+    await stopping?.stop({ remove: true });
+  };
 
   return {
     url: `redis://127.0.0.1:${String(port)}`,
     pause: async () => {
-      await runningContainer.pause();
+      await running().pause();
     },
     unpause: async () => {
-      await runningContainer.unpause();
+      const current = running();
+      const { State } = await runtime.container.inspect(current);
+      if (State.Paused) await current.unpause();
     },
-    stop: async () => {
-      await container.stop({ remove: false });
-    },
+    stop: down,
     start: async () => {
-      await container.restart();
+      container ??= await definition().start();
     },
-    remove: async () => {
-      await container.stop();
-    },
+    remove: down,
   };
 }
 
