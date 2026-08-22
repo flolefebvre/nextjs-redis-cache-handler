@@ -5,6 +5,7 @@ import {
   freshPrefix,
   handlerFor,
   serverClient,
+  tick,
   timingsOf,
 } from "../tests/handler-harness.js";
 import type { CacheEntry } from "./types.js";
@@ -15,6 +16,7 @@ test("a tag another Instance expired makes the Entry a miss on the next request"
   await instanceB.refreshTags();
 
   await instanceA.set("posts", Promise.resolve(entryOf({ tags: ["posts"] })));
+  await tick();
   await instanceA.updateTags(["posts"]);
   await instanceB.refreshTags();
 
@@ -64,6 +66,7 @@ test("concurrent refreshes of one handler object share a single read", async () 
   const [instanceA, instanceB] = [handlerFor(keyPrefix), handlerFor(keyPrefix)];
 
   await instanceA.set("posts", Promise.resolve(entryOf({ tags: ["posts"] })));
+  await tick();
   await instanceA.updateTags(["posts"]);
   await Promise.all([instanceB.refreshTags(), instanceB.refreshTags(), instanceB.refreshTags()]);
 
@@ -75,6 +78,7 @@ test("an Entry written after the tag event is served", async () => {
   const [instanceA, instanceB] = [handlerFor(keyPrefix), handlerFor(keyPrefix)];
 
   await instanceA.updateTags(["posts"]);
+  await tick();
   await instanceA.set("posts", Promise.resolve(entryOf({ tags: ["posts"] })));
   await instanceB.refreshTags();
 
@@ -90,6 +94,7 @@ test("a tag revalidated for max is served once more, with its other timings unch
   const entry = entryOf({ tags: ["posts"] });
 
   await instanceA.set("posts", Promise.resolve(entry));
+  await tick();
   await instanceA.updateTags(["posts"], { expire: 31536000 });
   await instanceB.refreshTags();
 
@@ -105,6 +110,7 @@ test("a tag expired now, however Next.js says it, is an immediate miss", async (
 
   await instanceA.set("zero", Promise.resolve(entryOf({ tags: ["zero"] })));
   await instanceA.set("legacy", Promise.resolve(entryOf({ tags: ["legacy"] })));
+  await tick();
   await instanceA.updateTags(["zero"], { expire: 0 });
   await instanceA.updateTags(["legacy"]);
   await instanceB.refreshTags();
@@ -118,6 +124,7 @@ test("durations without an expire make the tag Stale and leave its expiration wh
   const [instanceA, instanceB] = [handlerFor(keyPrefix), handlerFor(keyPrefix)];
 
   await instanceA.set("posts", Promise.resolve(entryOf({ tags: ["posts"] })));
+  await tick();
   await instanceA.updateTags(["posts"], { expire: 31536000 });
   await instanceA.updateTags(["posts"], {});
   await instanceB.refreshTags();
@@ -126,4 +133,66 @@ test("durations without an expire make the tag Stale and leave its expiration wh
 
   expect(hit).toBeDefined();
   expect(hit.revalidate).toBe(-1);
+});
+
+test("a Soft tag expired elsewhere makes the Entry miss, and is never stored on it", async () => {
+  const keyPrefix = freshPrefix();
+  const [instanceA, instanceB] = [handlerFor(keyPrefix), handlerFor(keyPrefix)];
+  const softTags = ["_N_T_/layout", "_N_T_/blog"];
+
+  await instanceA.set("page", Promise.resolve(entryOf({ tags: ["posts"] })));
+  await instanceB.refreshTags();
+  const before = (await instanceB.get("page", softTags)) as CacheEntry;
+  await tick();
+  await instanceA.updateTags(["_N_T_/blog"]);
+  await instanceB.refreshTags();
+
+  expect(before.tags).toEqual(["posts"]);
+  expect(await instanceB.get("page", softTags)).toBeUndefined();
+  expect(await instanceB.get("page", [])).toBeDefined();
+});
+
+test("an outer Entry carrying an inner scope's tag misses when that inner tag is expired", async () => {
+  const keyPrefix = freshPrefix();
+  const [instanceA, instanceB] = [handlerFor(keyPrefix), handlerFor(keyPrefix)];
+
+  await instanceA.set("outer", Promise.resolve(entryOf({ tags: ["outer", "inner"] })));
+  await tick();
+  await instanceA.updateTags(["inner"]);
+  await instanceB.refreshTags();
+
+  expect(await instanceB.get("outer", [])).toBeUndefined();
+});
+
+test("an Entry whose timestamp is ahead of the server clock is still dropped by a later tag event", async () => {
+  const keyPrefix = freshPrefix();
+  const [instanceA, instanceB] = [handlerFor(keyPrefix), handlerFor(keyPrefix)];
+  const ahead = entryOf({ tags: ["posts"], timestamp: Date.now() + 5_000 });
+
+  await instanceA.set("skewed", Promise.resolve(ahead));
+  await tick();
+  await instanceA.updateTags(["posts"]);
+  await instanceB.refreshTags();
+
+  expect(await instanceB.get("skewed", [])).toBeUndefined();
+});
+
+test("an Entry past its revalidate window is served once more while it is regenerated", async () => {
+  const keyPrefix = freshPrefix();
+  const handler = handlerFor(keyPrefix);
+  await handler.refreshTags();
+  const entry = entryOf({ timestamp: Date.now() - 120_000, revalidate: 60 });
+
+  await handler.set("aging", Promise.resolve(entry));
+  const hit = (await handler.get("aging", [])) as CacheEntry;
+
+  expect(hit).toBeDefined();
+  expect(timingsOf(hit)).toEqual({ ...timingsOf(entry), revalidate: -1 });
+});
+
+test("getExpiration never asks the wrapper to discard anything", async () => {
+  const handler = handlerFor(freshPrefix());
+
+  await expect(handler.getExpiration([])).resolves.toBe(Infinity);
+  await expect(handler.getExpiration(["posts", "_N_T_/blog"])).resolves.toBe(Infinity);
 });

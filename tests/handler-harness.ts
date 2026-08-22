@@ -52,6 +52,15 @@ export async function bytesOf(stream: ReadableStream<Uint8Array>): Promise<Uint8
   return Uint8Array.from(Buffer.concat(chunks));
 }
 
+/**
+ * A real pause long enough for the server clock to move on. Tag events and Write times
+ * are compared strictly, so a test that means "before" must not land on the same
+ * millisecond.
+ */
+export function tick(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 5));
+}
+
 /** An Entry as Next.js would hand it to `set`, with the given overrides. */
 export function entryOf(overrides: Partial<CacheEntry> = {}): CacheEntry {
   return {

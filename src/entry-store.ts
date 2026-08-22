@@ -7,6 +7,7 @@ import {
   type BufferedEntry,
   type StoredEntry,
 } from "./entry-hash.js";
+import type { Timestamp } from "./types.js";
 
 const NEVER_EXPIRES = 4_294_967_294;
 
@@ -24,6 +25,16 @@ export function entryTtlSeconds(expire: number, maxTtl: number): number {
   if (!Number.isFinite(expire) || expire >= NEVER_EXPIRES) return maxTtl;
 
   return Math.min(Math.floor(expire), maxTtl);
+}
+
+/**
+ * How old the Entry is at the moment it is written, measured on the app's clock alone so
+ * that skew against the server cancels out (ADR 0002). An Entry that claims to have been
+ * generated in the future is treated as generated now: a Write time ahead of the server
+ * clock would let the Entry survive tag events that came after it.
+ */
+export function entryAge(timestamp: Timestamp, appNow: Timestamp): number {
+  return Math.max(0, appNow - timestamp);
 }
 
 /** Write the Entry and its TTL in one atomic unit, stamped with the Write time. */

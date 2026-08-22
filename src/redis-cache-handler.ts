@@ -1,6 +1,6 @@
 import { createCacheClient } from "./client.js";
 import type { BufferedEntry, StoredEntry } from "./entry-hash.js";
-import { entryKey, entryTtlSeconds, readEntry, writeEntry } from "./entry-store.js";
+import { entryAge, entryKey, entryTtlSeconds, readEntry, writeEntry } from "./entry-store.js";
 import { DEFAULT_KEY_PREFIX, DEFAULT_MAX_TTL, type RedisCacheHandlerOptions } from "./options.js";
 import { createTagManifest } from "./tag-manifest.js";
 import { readTagManifest, writeTagEvents } from "./tag-store.js";
@@ -49,7 +49,7 @@ export function createRedisCacheHandler(
     const value = await readStream(entry.value);
     if (entry.expire <= 0) return;
 
-    const age = Date.now() - entry.timestamp;
+    const age = entryAge(entry.timestamp, Date.now());
     const connected = await client.connected();
 
     await writeEntry(
