@@ -47,7 +47,7 @@ export interface ReporterHooks {
 /**
  * Where one handler object sends everything it observes. The only place a hook is
  * called, so the only place a hook exception is caught: nothing a caller's hook throws
- * ever reaches an operation.
+ * ever reaches an operation, whether it throws or, when the hook is async, rejects.
  */
 export interface CacheReporter {
   /** Report one outcome to every event hook installed. */
@@ -82,9 +82,10 @@ function installed<T>(...hooks: (T | undefined)[]): T[] {
   return hooks.filter((hook): hook is T => hook !== undefined);
 }
 
-function guarded(call: () => void): void {
+function guarded(call: () => unknown): void {
   try {
-    call();
+    const returned = call();
+    if (returned instanceof Promise) void returned.catch(() => undefined);
   } catch {
     return;
   }

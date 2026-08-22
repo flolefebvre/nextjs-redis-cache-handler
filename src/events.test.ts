@@ -46,6 +46,18 @@ test("a hook that throws is swallowed, and the hooks after it still run", () => 
   expect(log).toHaveBeenCalledTimes(1);
 });
 
+test("an async hook that rejects is swallowed", async () => {
+  const reporter = createReporter({
+    onEvent: () => Promise.reject(new Error("hook")),
+    onError: () => Promise.reject(new Error("hook")),
+  });
+
+  reporter.emit(HIT);
+  reporter.fail(new Error("WRONGTYPE"), "get");
+
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
 test("an error hook that throws is swallowed", () => {
   const reporter = createReporter({
     onError: () => {
