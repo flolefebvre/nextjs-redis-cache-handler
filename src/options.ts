@@ -27,13 +27,22 @@ export interface RedisCacheHandlerOptions {
    * the hash tag in their name, and every Entry is routed by its own key, so no operation
    * is ever cross-slot.
    *
-   * One caveat on Sentinel: the handler reads the whole Tag manifest again after a
-   * connection under it was rebuilt, and a Sentinel client emits no event for that — it
-   * rebuilds its node clients out of sight. The count is approximated from the two events
-   * it does emit, `client-error` and `topology-change`, so it may count a rebuild that did
-   * not happen; that costs one full read of the manifest and nothing else. A standalone
-   * client is counted on `reconnecting` and a Cluster client on `node-reconnecting`, both
-   * of which name the event exactly.
+   * One caveat on Sentinel. The handler reads the whole Tag manifest again when the
+   * connection under it was rebuilt, because the server behind a rebuilt connection may be
+   * a different one — restarted empty, restored from an older dataset — whose event log no
+   * longer holds what the handler's watermark assumes. A standalone client names that
+   * moment `reconnecting` and a Cluster client names it `node-reconnecting`; a Sentinel
+   * client names it not at all, so it is counted on `topology-change` and `client-error`
+   * instead.
+   *
+   * A connection rebuilt to the same master is therefore not counted, and needs no full
+   * read: the incremental read resumes from the watermark, and an event written while the
+   * socket was down is above it and comes back with the next `refreshTags`. A failover is
+   * counted, through the `topology-change` the client emits for it. What is left uncounted
+   * is a master that comes back with a different dataset without a failover — restarted
+   * empty inside the Sentinel's `down-after-milliseconds`, say — where the handler keeps
+   * the manifest it already had: it then over-invalidates and never under-invalidates,
+   * since the Entries that manifest protects were on the dataset that was lost.
    */
   client?: CacheClient;
   /**

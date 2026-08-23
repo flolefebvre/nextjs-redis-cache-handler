@@ -165,9 +165,11 @@ export function clientKind(client: CacheClient): CacheClientKind {
  * `node-reconnecting` for the node whose socket is coming back. A Sentinel client says
  * nothing of the sort: it rebuilds its node clients out of sight, and the only things it
  * lets out are the error of a node (`client-error`) and a change of topology
- * (`topology-change`), which is why both are counted here. Counting more often than a
- * connection is really rebuilt costs one full read of the Tag manifest; counting less
- * often loses the events written while it was down.
+ * (`topology-change`), a failover among them, which is why both are counted here.
+ *
+ * Counting more often than a connection is really rebuilt costs one full read of the Tag
+ * manifest and nothing else, which is why the two Sentinel events are taken together
+ * rather than weighed against each other.
  */
 const RECONNECT_EVENTS: Record<CacheClientKind, readonly CacheClientEvent[]> = {
   standalone: ["reconnecting"],
