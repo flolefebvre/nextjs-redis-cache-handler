@@ -39,10 +39,7 @@ describe.skipIf(providedRedisUrl() !== undefined)("an injected Cluster client", 
     replicaReading = await connected(createCluster({ rootNodes, useReplicas: true }));
   }, DEPLOYMENT_TIMEOUT);
 
-  afterAll(async () => {
-    await replicaReading.close().catch(() => undefined);
-    await stopped(client, deployment);
-  });
+  afterAll(() => stopped([client, replicaReading], deployment));
 
   sharesTheStore(() => ({ client, nodeUrls: deployment.nodeUrls }));
 

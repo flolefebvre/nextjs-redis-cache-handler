@@ -64,11 +64,7 @@ describe.skipIf(providedRedisUrl() !== undefined)("an injected Sentinel client",
     );
   }, DEPLOYMENT_TIMEOUT);
 
-  afterAll(async () => {
-    await passthrough.close().catch(() => undefined);
-    await replicaReading.close().catch(() => undefined);
-    await stopped(client, deployment);
-  });
+  afterAll(() => stopped([client, passthrough, replicaReading], deployment));
 
   sharesTheStore(() => ({ client, nodeUrls: deployment.nodeUrls }));
 

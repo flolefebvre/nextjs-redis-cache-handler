@@ -526,12 +526,17 @@ export async function connected(client: TopologyClient): Promise<TopologyClient>
   return client;
 }
 
-/** Close a client one test file created and take its deployment down. */
+/**
+ * Close every client one test file created and take its deployment down. A file holds one
+ * client per kind of caller it puts the handler in front of — a plain one, one built to
+ * pass a node's failure on, one built to read replicas — and none of them may outlive the
+ * deployment they were pointed at.
+ */
 export async function stopped(
-  client: { close(): Promise<void> },
+  clients: { close(): Promise<void> }[],
   deployment: RunningTopology,
 ): Promise<void> {
-  await client.close().catch(() => undefined);
+  await Promise.all(clients.map((client) => client.close().catch(() => undefined)));
   await deployment.stop();
 }
 
