@@ -17,21 +17,26 @@ const entry: BufferedEntry = {
   revalidate: 60,
 };
 
-function hashOf(written: BufferedEntry, writeTime: number): Record<string, Buffer> {
-  const hash: Record<string, Buffer> = { [WRITE_TIME_FIELD]: Buffer.from(String(writeTime)) };
+function hashOf(written: BufferedEntry, writeTime: number): Map<string, Buffer> {
+  const hash = new Map<string, Buffer>([[WRITE_TIME_FIELD, Buffer.from(String(writeTime))]]);
   const fields = encodeEntryFields(written);
 
   for (let index = 0; index + 1 < fields.length; index += 2) {
     const name = fields[index];
     const value = fields[index + 1];
     if (typeof name !== "string" || value === undefined) continue;
-    hash[name] = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    hash.set(name, Buffer.isBuffer(value) ? value : Buffer.from(value));
   }
 
   return hash;
 }
 
-function decoded(hash: Record<string, Buffer>): unknown {
+/** The same hash with one field replaced, as a store holding an unreadable one would. */
+function withField(hash: Map<string, Buffer>, name: string, value: Buffer): Map<string, Buffer> {
+  return new Map(hash).set(name, value);
+}
+
+function decoded(hash: Map<string, Buffer>): unknown {
   const stored = decodeEntryHash(hash);
 
   return stored && { ...stored, value: Uint8Array.from(stored.value) };
@@ -58,10 +63,10 @@ test("an Entry with no tags and an empty value survives the round trip", () => {
 test("a hash missing any field is not an Entry", () => {
   const complete = hashOf(entry, 3);
 
-  expect(decodeEntryHash({})).toBeUndefined();
-  for (const field of Object.keys(complete)) {
-    const incomplete = { ...complete };
-    delete incomplete[field];
+  expect(decodeEntryHash(new Map())).toBeUndefined();
+  for (const field of complete.keys()) {
+    const incomplete = new Map(complete);
+    incomplete.delete(field);
 
     expect(decodeEntryHash(incomplete), `without ${field}`).toBeUndefined();
   }
@@ -70,10 +75,10 @@ test("a hash missing any field is not an Entry", () => {
 test("a hash whose timings or tags are unreadable is not an Entry", () => {
   const complete = hashOf(entry, 3);
 
-  expect(decodeEntryHash({ ...complete, expire: Buffer.from("later") })).toBeUndefined();
-  expect(decodeEntryHash({ ...complete, tags: Buffer.from("posts") })).toBeUndefined();
-  expect(decodeEntryHash({ ...complete, tags: Buffer.from('{"a":1}') })).toBeUndefined();
-  expect(decodeEntryHash({ ...complete, [WRITE_TIME_FIELD]: Buffer.from("") })).toBeUndefined();
+  expect(decodeEntryHash(withField(complete, "expire", Buffer.from("later")))).toBeUndefined();
+  expect(decodeEntryHash(withField(complete, "tags", Buffer.from("posts")))).toBeUndefined();
+  expect(decodeEntryHash(withField(complete, "tags", Buffer.from('{"a":1}')))).toBeUndefined();
+  expect(decodeEntryHash(withField(complete, WRITE_TIME_FIELD, Buffer.from("")))).toBeUndefined();
 });
 
 test("an Entry survives the round trip through the reply of the read script", () => {

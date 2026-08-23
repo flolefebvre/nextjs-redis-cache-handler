@@ -47,14 +47,14 @@ export function encodeEntryFields(entry: BufferedEntry): (string | Buffer)[] {
  * unreadable — a hash written by another version of this library is a miss, never a
  * throw.
  */
-export function decodeEntryHash(hash: Record<string, unknown>): StoredEntry | undefined {
-  const value = decodeBytes(hash[VALUE_FIELD]);
-  const tags = decodeTags(hash[TAGS_FIELD]);
-  const stale = decodeNumber(hash[STALE_FIELD]);
-  const timestamp = decodeNumber(hash[TIMESTAMP_FIELD]);
-  const expire = decodeNumber(hash[EXPIRE_FIELD]);
-  const revalidate = decodeNumber(hash[REVALIDATE_FIELD]);
-  const writeTime = decodeNumber(hash[WRITE_TIME_FIELD]);
+export function decodeEntryHash(hash: Map<string, unknown>): StoredEntry | undefined {
+  const value = decodeBytes(hash.get(VALUE_FIELD));
+  const tags = decodeTags(hash.get(TAGS_FIELD));
+  const stale = decodeNumber(hash.get(STALE_FIELD));
+  const timestamp = decodeNumber(hash.get(TIMESTAMP_FIELD));
+  const expire = decodeNumber(hash.get(EXPIRE_FIELD));
+  const revalidate = decodeNumber(hash.get(REVALIDATE_FIELD));
+  const writeTime = decodeNumber(hash.get(WRITE_TIME_FIELD));
 
   if (value === undefined || tags === undefined) return undefined;
   if (stale === undefined || timestamp === undefined) return undefined;

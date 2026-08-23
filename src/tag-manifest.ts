@@ -63,7 +63,7 @@ export function parseTagRefresh(reply: unknown): TagRefresh {
   if (!Number.isFinite(handlerNow) || !Number.isFinite(wallNow)) throw new Error(BAD_REPLY);
 
   const states = new Map<string, TagState>();
-  for (const [tag, value] of Object.entries(hashFieldsOf(reply[2]))) {
+  for (const [tag, value] of hashFieldsOf(reply[2])) {
     const state = parseTagState(String(value));
     if (state !== undefined) states.set(tag, state);
   }
