@@ -15,14 +15,25 @@ export interface RedisCacheHandlerOptions {
    */
   url?: string;
   /**
-   * A standalone node-redis client the caller created and owns, whatever its RESP
-   * version, its TLS socket or its own tuning: the escape hatch for a connection this
-   * library's own options cannot express. It is used exactly as given — never connected,
-   * never quit, and `close()` leaves it open — so the caller connects it and tunes it
-   * themselves. Exclusive with `url`: exactly one of the two is required.
+   * A node-redis client the caller created and owns — standalone, Sentinel
+   * (`createSentinel`) or Cluster (`createCluster`) — whatever its RESP version, its TLS
+   * socket or its own tuning: the escape hatch for a connection this library's own
+   * options cannot express, and the way to point the handler at a Sentinel deployment or
+   * a Cluster. It is used exactly as given — never connected, never quit, and `close()`
+   * leaves it open — so the caller connects it and tunes it themselves. Exclusive with
+   * `url`: exactly one of the two is required.
    *
-   * A Cluster or Sentinel client is not accepted yet: node-redis gives those a different
-   * `sendCommand` signature, so they do not satisfy `CacheClient`.
+   * On Cluster, the Tag manifest, its log and the Handler clock share one slot through
+   * the hash tag in their name, and every Entry is routed by its own key, so no operation
+   * is ever cross-slot.
+   *
+   * One caveat on Sentinel: the handler reads the whole Tag manifest again after a
+   * connection under it was rebuilt, and a Sentinel client emits no event for that — it
+   * rebuilds its node clients out of sight. The count is approximated from the two events
+   * it does emit, `client-error` and `topology-change`, so it may count a rebuild that did
+   * not happen; that costs one full read of the manifest and nothing else. A standalone
+   * client is counted on `reconnecting` and a Cluster client on `node-reconnecting`, both
+   * of which name the event exactly.
    */
   client?: CacheClient;
   /**
