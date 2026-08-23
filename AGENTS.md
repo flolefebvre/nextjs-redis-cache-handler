@@ -33,6 +33,7 @@ e2e/            The e2e harness, and one .e2e.test.ts per Scenario
   fixture/        The Fixture app: a Next.js app consuming the built output by package name
   fixture-build.ts  The one `next build` of a run, and the build Key prefix it writes under
   instances.ts    startInstances(): a Scenario's fresh Instance pair, on a seeded prefix
+  pages.ts        The Fixture's paths, and the markers each of its pages owes
   records.ts      The Recorded calls, sliced by offset and awaited with waitFor
 docs/
   codebase/     Conventions, one file per area, linked from the AGENTS.md section it governs
