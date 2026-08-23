@@ -44,6 +44,7 @@ const TRANSIENT_REPLIES = [
   "BUSY Redis is busy running a script",
   "MASTERDOWN Link with MASTER is down and replica-serve-stale-data is set to 'no'",
   "READONLY You can't write against a read only replica",
+  "NOREPLICAS Not enough good replicas to write",
   "CLUSTERDOWN The cluster is down",
   "TRYAGAIN Multiple keys request during rehashing of slot",
   "MOVED 3999 127.0.0.1:6381",

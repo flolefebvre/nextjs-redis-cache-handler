@@ -22,9 +22,10 @@ export interface RetryBudget {
  * The reply codes a retry is worth waiting through: every one of them names a state the
  * server clears on its own — loading its dataset (`LOADING`), running someone else's
  * script (`BUSY`), a replica whose link to its master is down (`MASTERDOWN`), a node
- * demoted by a failover in flight (`READONLY`), a cluster reshaping or reshaping a slot
- * this command needs (`CLUSTERDOWN`, `TRYAGAIN`, `MOVED`, `ASK`). That criterion, not the
- * list, is what a code added here has to meet.
+ * demoted by a failover in flight (`READONLY`), a master left with fewer replicas than
+ * `min-replicas-to-write` asks for until they reconnect (`NOREPLICAS`), a cluster
+ * reshaping or reshaping a slot this command needs (`CLUSTERDOWN`, `TRYAGAIN`, `MOVED`,
+ * `ASK`). That criterion, not the list, is what a code added here has to meet.
  *
  * `MOVED` and `ASK` are the Cluster client's own business and should never reach this
  * loop; they are named here for the one that escapes it, which a later attempt follows.
@@ -34,6 +35,7 @@ const TRANSIENT_REPLY_CODES = new Set([
   "BUSY",
   "MASTERDOWN",
   "READONLY",
+  "NOREPLICAS",
   "CLUSTERDOWN",
   "TRYAGAIN",
   "MOVED",
