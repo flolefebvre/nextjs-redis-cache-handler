@@ -5,7 +5,13 @@ import { join } from "node:path";
 import { createClient } from "redis";
 import { inject, vi } from "vitest";
 
-import { freeHostPort } from "../tests/redis-container.js";
+import {
+  freeHostPort,
+  providedRedisUrl,
+  startOutageRedis,
+  testImage,
+  type OutageRedis,
+} from "../tests/redis-container.js";
 import {
   distDirOf,
   fixtureEnv,
@@ -57,10 +63,12 @@ export interface InstancesOptions {
    */
   build?: FixtureHandler;
   /**
-   * Whether the Instances are given the run's store. `none` starts them with no
-   * `REDIS_URL` at all, not even the one the developer's shell may carry.
+   * Which store the Instances are given. `shared` is the run's own, which every other
+   * Scenario is talking to; `none` starts them with no `REDIS_URL` at all, not even the
+   * one the developer's shell may carry; `own` starts a server for this Scenario alone,
+   * which it may therefore break — the run's store is never paused nor stopped.
    */
-  store?: "shared" | "none";
+  store?: "shared" | "none" | "own";
   /**
    * Extra environment for both Instances, on top of what the harness sets: the library's
    * own `NEXT_REDIS_CACHE_*` variables, for a Scenario whose narrative is a configuration.
@@ -116,8 +124,39 @@ export interface Instances {
    * file it opened by a path it guessed.
    */
   logged(instance: InstanceName, text: string): Promise<string[]>;
-  /** Stop both Instances. */
+  /**
+   * Stop both Instances, and remove the store when it was this Scenario's own. An outage
+   * a failed step left in place is lifted first: removing a frozen container waits the
+   * runtime's stop timeout out before it kills it.
+   */
   stop(): Promise<void>;
+}
+
+/** The store one Scenario alone runs on, and the outage it may put it through. */
+export interface OwnStore {
+  /** Freeze the server: connections stay open, commands never get a reply. */
+  pause(): Promise<void>;
+  /** Unfreeze it: the commands that were in flight get their reply. */
+  unpause(): Promise<void>;
+}
+
+/**
+ * The Instances of a Scenario that asked for a store of its own: the only ones that carry
+ * a store to break, so that a Scenario on the run's shared store cannot pause it at all.
+ */
+export interface OwnStoreInstances extends Instances {
+  /** The store this Scenario alone runs on, which it may therefore break. */
+  store: OwnStore;
+}
+
+/**
+ * Whether a Scenario that breaks its own store can run at all: it needs a server the
+ * harness started, and `CACHE_TEST_REDIS_URL` names one it was only lent — a provided
+ * server is nobody's to pause. The e2e counterpart of the skip the outage integration
+ * tests take, kept here so that no Scenario reaches for the container harness itself.
+ */
+export function canPauseStore(): boolean {
+  return providedRedisUrl() === undefined;
 }
 
 /**
@@ -132,7 +171,16 @@ export interface Instances {
  * Scenario's own prefix, so a prewarmed read is unambiguous (nobody else wrote it) and two
  * Scenario files can never see each other's revalidations. An empty copy is a failure
  * here, where it names itself, rather than a puzzling miss inside a step.
+ *
+ * A Scenario on a store of its own is seeded from nothing instead: the build's Entries are
+ * on the run's server and `COPY` never crosses two of them, so it warms what it needs with
+ * its own first requests, exactly as a Scenario on the Zero-config build does.
  */
+export function startInstances(
+  scenario: string,
+  options: InstancesOptions & { store: "own" },
+): Promise<OwnStoreInstances>;
+export function startInstances(scenario: string, options?: InstancesOptions): Promise<Instances>;
 export async function startInstances(
   scenario: string,
   options: InstancesOptions = {},
@@ -140,7 +188,8 @@ export async function startInstances(
   const builds = inject("e2eBuilds");
   const build = builds[options.build === "zero-config" ? "zeroConfig" : "recording"];
   const keyPrefix = `e2e-${scenario}-${suffix()}:`;
-  if (build.buildPrefix !== undefined) {
+  const own = options.store === "own" ? await startOutageRedis(testImage()) : undefined;
+  if (build.buildPrefix !== undefined && own === undefined) {
     await seedPrefix(builds.redisUrl, build.buildPrefix, keyPrefix);
   }
 
@@ -149,12 +198,11 @@ export async function startInstances(
     NEXT_REDIS_CACHE_KEY_PREFIX: keyPrefix,
     NEXT_CACHE_E2E_HANDLER: build.handler,
     NEXT_TELEMETRY_DISABLED: "1",
-    ...(options.store === "none" ? {} : { REDIS_URL: builds.redisUrl }),
+    ...(options.store === "none" ? {} : { REDIS_URL: own?.url ?? builds.redisUrl }),
     ...(await recording(build, recordFile)),
     ...options.env,
   };
-  const a = await startInstance("A", scenario, env);
-  const running = { A: a, B: await second(a, scenario, env) };
+  const running = await instancePair(scenario, env, own);
   const urlOf = (instance: InstanceName): string => running[instance].url;
 
   const get = async (
@@ -166,6 +214,7 @@ export async function startInstances(
   return {
     buildId: build.buildId,
     keyPrefix,
+    ...(own === undefined ? {} : { store: { pause: own.pause, unpause: own.unpause } }),
     calls: recordedCalls(recordFile),
     get,
     markersOnceChanged: async (instance, path, marker, before) => {
@@ -221,15 +270,37 @@ export async function startInstances(
     },
     stop: async () => {
       await Promise.all([running.A.stop(), running.B.stop()]);
+      await own?.unpause();
+      await own?.remove();
     },
   };
 }
 
 /**
- * The second Instance, started so that a failure to start it takes the first one down
- * with it: a Scenario whose `beforeAll` threw never gets to call `stop`, and a `next
- * start` nobody owns would hold its port and its Redis connection for the rest of the run.
- * An Instance that never becomes ready stops itself, in `startInstance`, for the same
+ * Both Instances, started so that a failure to start either one takes down everything the
+ * harness had already started for this Scenario — the first Instance, and the server it
+ * may own. A Scenario whose `beforeAll` threw never gets to call `stop`, and a `next
+ * start` nobody owns would hold its port and its Redis connection for the rest of the run,
+ * as would a container nobody removes.
+ */
+async function instancePair(
+  scenario: string,
+  env: InstanceEnv,
+  own: OutageRedis | undefined,
+): Promise<Record<InstanceName, RunningInstance>> {
+  try {
+    const a = await startInstance("A", scenario, env);
+
+    return { A: a, B: await second(a, scenario, env) };
+  } catch (error) {
+    await own?.remove();
+    throw error;
+  }
+}
+
+/**
+ * The second Instance, started so that a failure to start it takes the first one down with
+ * it. An Instance that never becomes ready stops itself, in `startInstance`, for the same
  * reason.
  */
 async function second(
