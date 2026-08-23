@@ -13,10 +13,11 @@ import { createRedisCacheHandler, optionsFromEnv } from "@flefebvre/nextjs-redis
  * - `NEXT_CACHE_E2E_RECORD_FILE` → the JSONL file every Instance of the run appends to
  * - `NEXT_CACHE_E2E_INSTANCE` → the name this process is recorded under (`A`, `B`, `build`)
  *
- * One line per Recorded call: `{ seq, at, instance, method, key, tags, outcome }`. The
- * outcome of a `get` or a `set` is the event the handler reported during that call —
+ * One line per Recorded call: `{ seq, at, instance, method, key, tags, outcome, size }`.
+ * The outcome of a `get` or a `set` is the event the handler reported during that call —
  * `hit`, `miss:expired`, `stale`, `set`, `skip:too-large` — and `ok` or `error` for the
- * methods that report none. A line is appended with one `appendFileSync`, so the two
+ * methods that report none. `size` is the bytes a `skip` event carries, and is absent from
+ * every line whose event carries none. A line is appended with one `appendFileSync`, so the two
  * Instances writing to one file never interleave a line.
  *
  * A missing variable, and an environment that configures no store, are harness errors and
@@ -42,7 +43,7 @@ const recording = {
     const from = events.length;
     try {
       const entry = await handler.get(cacheKey, softTags);
-      record("get", cacheKey, softTags, outcomeSince(from, cacheKey));
+      recordEvent("get", cacheKey, softTags, eventSince(from, cacheKey));
 
       return entry;
     } catch (error) {
@@ -61,7 +62,7 @@ const recording = {
     });
     try {
       await handler.set(cacheKey, tracked);
-      record("set", cacheKey, tags, outcomeSince(from, cacheKey));
+      recordEvent("set", cacheKey, tags, eventSince(from, cacheKey));
     } catch (error) {
       record("set", cacheKey, tags, "error");
       throw error;
@@ -110,19 +111,28 @@ function required(variable) {
   return value;
 }
 
-function outcomeSince(from, cacheKey) {
+function eventSince(from, cacheKey) {
   const reported = events.slice(from).filter((event) => event.key === cacheKey);
-  const event = reported[reported.length - 1];
-  if (event === undefined) return "none";
 
-  return "reason" in event ? `${event.type}:${event.reason}` : event.type;
+  return reported[reported.length - 1];
 }
 
-function record(method, key, tags, outcome) {
+function recordEvent(method, key, tags, event) {
+  if (event === undefined) {
+    record(method, key, tags, "none");
+
+    return;
+  }
+  const outcome = "reason" in event ? `${event.type}:${event.reason}` : event.type;
+
+  record(method, key, tags, outcome, event.size);
+}
+
+function record(method, key, tags, outcome, size) {
   seq += 1;
   appendFileSync(
     recordFile,
-    `${JSON.stringify({ seq, at: Date.now(), instance, method, key, tags: [...tags], outcome })}\n`,
+    `${JSON.stringify({ seq, at: Date.now(), instance, method, key, tags: [...tags], outcome, size })}\n`,
   );
 }
 

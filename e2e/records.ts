@@ -12,7 +12,8 @@ export type HandlerMethod = keyof CacheHandler;
  *
  * `outcome` is the event the handler reported during the call — `hit`, `miss:absent`,
  * `miss:expired`, `stale`, `set`, `skip:too-large` — and `ok` or `error` for the methods
- * that report none. `seq` counts within one process, so it orders the calls of one
+ * that report none. `size` is the bytes a `skip` event carries, and is absent from every
+ * call whose event carries none. `seq` counts within one process, so it orders the calls of one
  * Instance and says nothing across two: the file's line order is the only shared order,
  * and no Scenario asserts on it.
  */
@@ -24,6 +25,7 @@ export interface RecordedCall {
   key: string;
   tags: string[];
   outcome: string;
+  size?: number;
 }
 
 /**

@@ -11,6 +11,9 @@ export const LIST = "/";
 /** The Fixture's partially prerendered route: a cached shell, and a dynamic hole. */
 export const PPR = "/ppr";
 
+/** The Fixture's largest page: a 500-row table, cached inside a dynamic hole. */
+export const BIG = "/big";
+
 const POST_MARKERS = ["comments", "post-body", "remote-note"];
 
 /**
@@ -36,6 +39,21 @@ export async function postMarkersOnceChanged(
   before: string | undefined,
 ): Promise<Record<string, string>> {
   return everyMarker(await instances.markersOnceChanged(instance, POST, marker, before));
+}
+
+/**
+ * The instant the big table rendered at, on a page that served. The marker has to be
+ * there: a request that rendered the table away would compare two absent values, which
+ * passes without observing anything.
+ */
+export async function bigMarker(instances: Instances, instance: InstanceName): Promise<string> {
+  const { status, markers } = await instances.get(instance, BIG);
+  const rendered = markers["big"];
+
+  expect(status).toBe(200);
+  if (rendered === undefined) throw new Error("the big page rendered no `big` marker");
+
+  return rendered;
 }
 
 function everyMarker(markers: Record<string, string>): Record<string, string> {

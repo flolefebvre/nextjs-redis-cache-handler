@@ -7,7 +7,7 @@ export default defineConfig([
     "dist",
     "node_modules",
     "coverage",
-    "e2e/fixture/.next",
+    "e2e/fixture/.next*",
     "e2e/fixture/.e2e",
     "e2e/fixture/next-env.d.ts",
   ]),

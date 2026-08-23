@@ -31,8 +31,9 @@ tests/          Test harness wiring, and tests that exercise it
                   .mjs/.cjs processes smoke:dist runs against it
 e2e/            The e2e harness, and one .e2e.test.ts per Scenario
   fixture/        The Fixture app: a Next.js app consuming the built output by package name
-  fixture-build.ts  The one `next build` of a run, and the build Key prefix it writes under
-  instances.ts    startInstances(): a Scenario's fresh Instance pair, on a seeded prefix
+  fixture-build.ts  The two `next build`s of a run — the recording one and the Zero-config
+                  one — their distDirs, and the build Key prefix the first writes under
+  instances.ts    startInstances(): a Scenario's fresh Instance pair, on the build it asks for
   pages.ts        The Fixture's paths, and the markers each of its pages owes
   records.ts      The Recorded calls, sliced by offset and awaited with waitFor
 docs/
