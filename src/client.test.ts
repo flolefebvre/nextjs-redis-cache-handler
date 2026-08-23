@@ -97,10 +97,10 @@ const KINDS = [
     kind: "sentinel",
     build: (): InjectedClient =>
       createSentinel({ name: "mymaster", sentinelRootNodes: [SENTINEL_NODE] }),
-    rebuilt: "client-error",
-    failed: "client-error",
-    payload: [{ type: "MASTER", node: NODE, error: NODE_FAILURE }],
-    reported: "MASTER client (127.0.0.1:6379): boom",
+    rebuilt: "topology-change",
+    failed: "error",
+    payload: [NODE_FAILURE],
+    reported: "boom",
   },
   {
     kind: "cluster",

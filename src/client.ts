@@ -113,12 +113,7 @@ export interface ClusterCacheCommands {
  * does not name at all. `clientKind` decides which of these one client is subscribed to.
  */
 export type CacheClientEvent =
-  | "error"
-  | "reconnecting"
-  | "node-reconnecting"
-  | "node-error"
-  | "client-error"
-  | "topology-change";
+  "error" | "reconnecting" | "node-reconnecting" | "node-error" | "topology-change";
 
 /**
  * A client of one kind: what the handler uses of a node-redis client, and nothing more.
@@ -190,18 +185,39 @@ export function clientKind(client: CacheClient): CacheClientKind {
  *
  * A standalone client says `reconnecting` for itself, and a Cluster client says
  * `node-reconnecting` for the node whose socket is coming back. A Sentinel client says
- * nothing of the sort: it rebuilds its node clients out of sight, and the only things it
- * lets out are the error of a node (`client-error`) and a change of topology
- * (`topology-change`), a failover among them, which is why both are counted here.
+ * nothing of the sort: it rebuilds its node clients out of sight, and node-redis's
+ * `RedisSentinel` forwards only two events off the emitter that would know — `error` and
+ * `topology-change` — so a change of topology, a failover among them, is the one thing a
+ * rebuilt connection can be counted on there.
  *
  * Counting more often than a connection is really rebuilt costs one full read of the Tag
- * manifest and nothing else, which is why the two Sentinel events are taken together
- * rather than weighed against each other.
+ * manifest and nothing else, which is why an event as broad as a topology change is taken
+ * as one.
  */
 const RECONNECT_EVENTS: Record<CacheClientKind, readonly CacheClientEvent[]> = {
   standalone: ["reconnecting"],
-  sentinel: ["client-error", "topology-change"],
+  sentinel: ["topology-change"],
   cluster: ["node-reconnecting"],
+};
+
+/**
+ * The event each kind lets the failure of a node under it out as, reported through the same
+ * `connect` as the client's own `error`, so that an outage of a node means the same thing
+ * wherever a deployment holds one.
+ *
+ * A standalone client has none: it holds one connection, and its `error` is that failure.
+ * A Cluster client emits `node-error`, the node's error first and the node's address second,
+ * which is read here into an `Error` naming that node. A Sentinel client has none a caller
+ * can hear: node-redis's `RedisSentinel` keeps the failures of its node connections on an
+ * internal emitter and forwards only `error` and `topology-change` off it, so the one
+ * channel a node failure reaches is the `error` a client built with
+ * `passthroughClientErrorEvents` re-emits, already wrapped by node-redis with the node it
+ * happened on, and the handler's `error` listener carries it.
+ */
+const NODE_FAILURES: Record<CacheClientKind, readonly NodeFailure[]> = {
+  standalone: [],
+  sentinel: [],
+  cluster: [{ event: "node-error", errorOf: clusterNodeError }],
 };
 
 /** What one kind lets the failure of a node under it out as, and how that payload is read. */
@@ -212,54 +228,21 @@ interface NodeFailure {
   errorOf: (payload: readonly unknown[]) => Error;
 }
 
-/** What a Sentinel client's `client-error` carries: the role of a node, the node, its error. */
-interface SentinelClientError {
-  type?: unknown;
-  node?: unknown;
-  error?: unknown;
-}
-
 /**
- * The event each kind lets the failure of a node under it out as, reported through the same
- * `connect` as its own `error`, so that an outage of a node means the same thing on the
- * three kinds.
- *
- * A standalone client has none: it holds one connection, and its `error` is that failure.
- * A Sentinel client keeps the failures of the node connections it holds out of its `error`
- * — unless `passthroughClientErrorEvents` is on — and lets them out as `client-error`, one
- * event object carrying the role of the node, the node, and its error. A Cluster client
- * emits `node-error`, the node's error first and the node's address second.
- */
-const NODE_FAILURES: Record<CacheClientKind, NodeFailure | undefined> = {
-  standalone: undefined,
-  sentinel: {
-    event: "client-error",
-    errorOf: (payload) => {
-      const event = payload[0] as SentinelClientError | undefined;
-
-      return nodeError(`${String(event?.type)} client`, event?.node, event?.error);
-    },
-  },
-  cluster: {
-    event: "node-error",
-    errorOf: (payload) => nodeError("Cluster node", payload[1], payload[0]),
-  },
-};
-
-/**
- * The `Error` one node-level failure reaches `onError` as: what failed, where it failed when
- * the payload names the node, and the original as its `cause`.
+ * The `Error` a Cluster client's `node-error` reaches `onError` as: the node it happened on,
+ * as node-redis emits it after the node's own error, and that error as the `cause`.
  *
  * It is an `Error` whatever the payload holds — a caller's client may come from another copy
  * of node-redis, and a hook handed a bare object instead of an error has nothing to log — so
  * a payload that reads as neither loses the address and is stringified for its message.
  */
-function nodeError(what: string, node: unknown, cause: unknown): Error {
+function clusterNodeError(payload: readonly unknown[]): Error {
+  const [cause, node] = payload;
   const { host, port } = (node ?? {}) as { host?: unknown; port?: unknown };
   const where = host === undefined ? "" : ` (${String(host)}:${String(port)})`;
   const message = cause instanceof Error ? cause.message : String(cause);
 
-  return new Error(`${what}${where}: ${message}`, { cause });
+  return new Error(`Cluster node${where}: ${message}`, { cause });
 }
 
 /**
@@ -301,8 +284,8 @@ export interface CacheClientHandle {
  *
  * That mandatory listener is where `fail` is called with `connect`: node-redis emits
  * `error` for socket failures and for every failed connection attempt, outside any
- * operation of the handler, and a Sentinel or a Cluster client says the same of a node
- * under it on an event of its own. `fail` is the reporter's, which never throws, so nothing
+ * operation of the handler, and a Cluster client says the same of a node under it on an
+ * event of its own. `fail` is the reporter's, which never throws, so nothing
  * of a caller's can propagate back into node-redis's emitter.
  */
 export function createCacheClient(
@@ -320,8 +303,8 @@ export function createCacheClient(
 
 /**
  * Attach what the handler listens to, on a client of any of the three kinds: the `error`
- * listener node-redis crashes the process without, the node-level failure the kinds that
- * hold node connections let out beside it, and the count of reconnections a refresh of the
+ * listener node-redis crashes the process without, the node-level failure a kind that holds
+ * node connections lets out beside it, and the count of reconnections a refresh of the
  * Tag manifest reads, on whichever events that kind names one by. `detach`
  * takes back exactly the listeners it attached, so that one long-lived injected client
  * feeding many handler objects collects none of them. It is for an injected client only:
@@ -334,19 +317,18 @@ function listenTo(client: CacheClient, report: (error: unknown) => void) {
     reconnects += 1;
   };
   const kind = clientKind(client);
-  const failed = NODE_FAILURES[kind];
   const listeners: [CacheClientEvent, (...payload: unknown[]) => void][] = [
     ["error", report],
     ...RECONNECT_EVENTS[kind].map((event): [CacheClientEvent, () => void] => [event, count]),
+    ...NODE_FAILURES[kind].map(
+      ({ event, errorOf }): [CacheClientEvent, (...payload: unknown[]) => void] => [
+        event,
+        (...payload) => {
+          report(errorOf(payload));
+        },
+      ],
+    ),
   ];
-  if (failed !== undefined) {
-    listeners.push([
-      failed.event,
-      (...payload): void => {
-        report(failed.errorOf(payload));
-      },
-    ]);
-  }
 
   for (const [event, listener] of listeners) client.on(event, listener);
 
