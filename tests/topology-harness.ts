@@ -317,6 +317,11 @@ export interface Disturbed {
   tagCommands: string[];
   /** How many rebuilt connections were counted while it happened. */
   rebuilds: number;
+  /**
+   * Every failure the client reported outside an operation while it happened: what an
+   * operator sees of the disturbance through `onError(…, 'connect')`.
+   */
+  connectFailures: unknown[];
 }
 
 /**
@@ -327,22 +332,25 @@ export interface Disturbed {
  *
  * The disturbance is the caller's — a killed connection, a failover — and so is the wait
  * for it to have happened: only the caller knows what its kind of client says when it has.
- * Everything around it is the same narrative whichever deployment is under it, which is
- * what makes the answers comparable.
+ * A caller that waits on what was reported rather than on an event takes the failures so
+ * far from the accessor it is handed. Everything around it is the same narrative whichever
+ * deployment is under it, which is what makes the answers comparable.
  */
 export async function acrossADisturbance(
   { client, nodeUrls }: Topology,
-  disturb: () => Promise<void>,
+  disturb: (failures: () => unknown[]) => Promise<void>,
 ): Promise<Disturbed> {
   const keyPrefix = freshPrefix();
-  const handle = createCacheClient({ client }, () => undefined);
+  const failures: unknown[] = [];
+  const handle = createCacheClient({ client }, (error) => failures.push(error));
   const reader = instanceOn(client, keyPrefix);
   const writer = instanceOn(client, keyPrefix);
   await storeBefore(writer, "posts", { tags: ["posts"] });
   await reader.refreshTags();
   const counted = handle.reconnects();
+  const reported = failures.length;
 
-  await disturb();
+  await disturb(() => failures.slice(reported));
 
   const settled = await tagCommandsOn(keyPrefix, nodeUrls);
   await vi.waitFor(() => writer.updateTags(["posts"]));
@@ -351,10 +359,56 @@ export async function acrossADisturbance(
     entry: await reader.get("posts", []),
     tagCommands: await settled(),
     rebuilds: handle.reconnects() - counted,
+    connectFailures: failures.slice(reported),
   };
   await handle.close();
 
   return disturbed;
+}
+
+/** How long a killed node connection is given to be reported, and the cell around it. */
+const REPORTED_TIMEOUT_MS = 10_000;
+
+const NODE_FAILURE_TIMEOUT_MS = 60_000;
+
+/** The address of the node a reported failure names, as every kind that names one spells it. */
+const NAMED_NODE = /\(.+:\d+\): /;
+
+/**
+ * What a client holding a connection per node owes the handler when one of them goes down:
+ * the node's failure is reported as the `connect` failure a standalone deployment reports,
+ * naming the node it happened on, and the deployment carries on propagating afterwards.
+ *
+ * It is one function rather than one copy per topology for the same reason `sharesTheStore`
+ * is, and it disturbs the deployment through `acrossADisturbance`, so that what it breaks is
+ * broken the way the counting cells of each file break it. What that disturbance is belongs
+ * to the caller, since only its kind of client knows which failure of a node it lets out.
+ */
+export function reportsNodeFailures(
+  topology: () => Topology,
+  disturb: (deployment: Topology) => Promise<unknown>,
+): void {
+  test(
+    "the failure of a node connection is reported as a connect failure, and propagation survives it",
+    async () => {
+      const deployment = topology();
+
+      const disturbed = await acrossADisturbance(deployment, async (failures) => {
+        await disturb(deployment);
+        await vi.waitFor(() => expect(failures()).not.toHaveLength(0), REPORTED_TIMEOUT_MS);
+      });
+
+      const messages = disturbed.connectFailures.map((failure) =>
+        failure instanceof Error ? failure.message : String(failure),
+      );
+      expect(disturbed.connectFailures.filter((failure) => failure instanceof Error)).toEqual(
+        disturbed.connectFailures,
+      );
+      expect(messages.filter((message) => NAMED_NODE.test(message))).toEqual(messages);
+      expect(disturbed.entry).toBeUndefined();
+    },
+    NODE_FAILURE_TIMEOUT_MS,
+  );
 }
 
 /**

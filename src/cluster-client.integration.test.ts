@@ -13,6 +13,7 @@ import {
   connected,
   KILL_CONNECTIONS,
   onEveryNode,
+  reportsNodeFailures,
   sharesTheStore,
   stopped,
   type TopologyClient,
@@ -39,6 +40,11 @@ describe.skipIf(providedRedisUrl() !== undefined)("an injected Cluster client", 
   afterAll(() => stopped(client, deployment));
 
   sharesTheStore(() => ({ client, nodeUrls: deployment.nodeUrls }));
+
+  reportsNodeFailures(
+    () => ({ client, nodeUrls: deployment.nodeUrls }),
+    ({ nodeUrls }) => onEveryNode(nodeUrls, KILL_CONNECTIONS),
+  );
 
   test(
     "a node connection rebuilt is counted, so the next refresh reads the whole manifest",
