@@ -90,6 +90,10 @@ export interface RedisCacheHandlerOptions {
   /**
    * Called once per failure, with the operation it happened in. A failing `updateTags`
    * calls it once, on the failure its retries ended with, never once per attempt.
+   * `connect` is every failure outside an operation, on the three kinds of client: the
+   * `error` of a standalone client, the `client-error` a Sentinel client lets the failure
+   * of one of its node connections out as, and the `node-error` a Cluster client emits for
+   * the node whose socket failed — the last two reported as an `Error` naming that node.
    * Defaults to `console.error` when neither this hook nor `debug` is given. Exceptions
    * are caught and ignored.
    */
