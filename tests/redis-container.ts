@@ -141,6 +141,156 @@ export async function startOutageRedis(image: string): Promise<OutageRedis> {
   };
 }
 
+/** A multi-process deployment one test file owns, and where its servers answer. */
+export interface RunningTopology {
+  /** The data nodes, in the order the topology's script started them. */
+  nodeUrls: string[];
+  /** Leave nothing behind. */
+  stop(): Promise<void>;
+}
+
+/** A Sentinel deployment: its data nodes, and the Sentinel that watches them. */
+export interface RunningSentinel extends RunningTopology {
+  /** Where the Sentinel answers, which is what a Sentinel client is pointed at. */
+  sentinelUrl: string;
+}
+
+const CLUSTER_READY = "CLUSTER READY";
+
+const SENTINEL_READY = "SENTINEL READY";
+
+const MASTER_NAME = "mymaster";
+
+const CLUSTER_NODES = 3;
+
+const BUS_PORT_OFFSET = 10_000;
+
+const DOWN_AFTER_MS = 1_000;
+
+const FAILOVER_TIMEOUT_MS = 5_000;
+
+/**
+ * The options every server of a topology is started with: nothing is persisted, because a
+ * topology lives for one test file and comes back empty or not at all.
+ */
+const VOLATILE = "--save '' --appendonly no --daemonize no";
+
+/**
+ * Start one container running a whole topology, on host ports it also listens on inside.
+ *
+ * The ports are the same on both sides on purpose. A Sentinel hands out the address of the
+ * master it watches and a Cluster node hands out the address of the node owning a slot, so
+ * a client only works when the addresses those servers announce are the ones the host can
+ * dial: a random published port would send it to a port nothing is on. The addresses are
+ * `127.0.0.1` for the same reason — loopback inside the container is loopback on the host,
+ * where the tests run, and a container's own address is not routable from there.
+ *
+ * The image is the one the whole suite runs against, and the servers are started by the
+ * `redis-server` and `redis-cli` names: the Valkey images ship those as symlinks, the
+ * Redis images ship nothing else, so one command serves every image of the matrix.
+ */
+async function startTopology(
+  image: string,
+  ports: number[],
+  script: string,
+  ready: string,
+): Promise<StartedTestContainer> {
+  return new GenericContainer(image)
+    .withExposedPorts(...ports.map((port) => ({ container: port, host: port })))
+    .withEntrypoint(["/bin/sh", "-c"])
+    .withCommand([script])
+    .withWaitStrategy(Wait.forLogMessage(ready))
+    .start();
+}
+
+/**
+ * Start a Cluster for one test file: three masters, no replica, every slot covered.
+ *
+ * Each node announces `127.0.0.1` and the very port it listens on, so the `MOVED` a node
+ * answers with sends the client to an address the host can dial. The bus ports are the
+ * announced ports plus the usual offset and are never published: the nodes gossip over
+ * loopback inside the container, and a client never dials one.
+ */
+export async function startClusterRedis(image: string): Promise<RunningTopology> {
+  const ports = await Promise.all(Array.from({ length: CLUSTER_NODES }, () => freeHostPort()));
+  const addresses = ports.map((port) => `127.0.0.1:${String(port)}`);
+  const nodes = ports
+    .map(
+      (port) =>
+        `redis-server --port ${String(port)} ${VOLATILE} --cluster-enabled yes` +
+        ` --cluster-config-file /tmp/node-${String(port)}.conf --cluster-announce-ip 127.0.0.1` +
+        ` --cluster-announce-port ${String(port)}` +
+        ` --cluster-announce-bus-port ${String(port + BUS_PORT_OFFSET)} &`,
+    )
+    .join("\n");
+  const first = String(ports[0]);
+  const container = await startTopology(
+    image,
+    ports,
+    `${nodes}
+sleep 2
+redis-cli --cluster create ${addresses.join(" ")} --cluster-yes
+until redis-cli -p ${first} cluster info | grep -q cluster_state:ok; do sleep 1; done
+echo ${CLUSTER_READY}
+wait`,
+    CLUSTER_READY,
+  );
+
+  return {
+    nodeUrls: ports.map((port) => `redis://127.0.0.1:${String(port)}`),
+    stop: async () => {
+      await container.stop({ remove: true });
+    },
+  };
+}
+
+/**
+ * Start a Sentinel deployment for one test file: one master, one replica, one Sentinel
+ * with a quorum of one, so that a single `SENTINEL FAILOVER` promotes the replica.
+ *
+ * Everything talks over loopback, which is what makes the master address the Sentinel
+ * hands out — and the replica address it learns from the master's `INFO` — dialable from
+ * the host. The failure detection is turned down to a second so a test does not wait a
+ * default minute for a rebuild to be noticed.
+ */
+export async function startSentinelRedis(image: string): Promise<RunningSentinel> {
+  const [master, replica, sentinel] = await Promise.all([
+    freeHostPort(),
+    freeHostPort(),
+    freeHostPort(),
+  ]);
+  const ports = [master, replica, sentinel];
+  const masterPort = String(master);
+  const replicaPort = String(replica);
+  const sentinelPort = String(sentinel);
+  const container = await startTopology(
+    image,
+    ports,
+    `redis-server --port ${masterPort} ${VOLATILE} &
+redis-server --port ${replicaPort} ${VOLATILE} --replicaof 127.0.0.1 ${masterPort} &
+sleep 2
+{
+  echo "port ${sentinelPort}"
+  echo "sentinel monitor ${MASTER_NAME} 127.0.0.1 ${masterPort} 1"
+  echo "sentinel down-after-milliseconds ${MASTER_NAME} ${String(DOWN_AFTER_MS)}"
+  echo "sentinel failover-timeout ${MASTER_NAME} ${String(FAILOVER_TIMEOUT_MS)}"
+} > /tmp/sentinel.conf
+redis-server /tmp/sentinel.conf --sentinel &
+until redis-cli -p ${sentinelPort} sentinel get-master-addr-by-name ${MASTER_NAME} | grep -q 127.0.0.1; do sleep 1; done
+echo ${SENTINEL_READY}
+wait`,
+    SENTINEL_READY,
+  );
+
+  return {
+    nodeUrls: [masterPort, replicaPort].map((port) => `redis://127.0.0.1:${port}`),
+    sentinelUrl: `redis://127.0.0.1:${sentinelPort}`,
+    stop: async () => {
+      await container.stop({ remove: true });
+    },
+  };
+}
+
 /**
  * A host port nothing is listening on, taken by binding one and letting it go: what a
  * server that has to answer at a fixed URL is started on, and what the e2e harness gives
