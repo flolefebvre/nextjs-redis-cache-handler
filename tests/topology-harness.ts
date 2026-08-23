@@ -119,6 +119,8 @@ const PROMOTION_MS = 8_000;
 
 const FAILOVER_IN_PROGRESS = "INPROG";
 
+const NO_PROMOTABLE_REPLICA = "NOGOODSLAVE";
+
 /**
  * A failover that could not complete because the Sentinel is in TILT: not a failure of
  * anything under test, and the one outcome a cell is allowed to skip itself on.
@@ -178,7 +180,8 @@ export async function promotableReplica(sentinelUrl: string): Promise<void> {
  * clock steps, so this is not a rare case here, and a second attempt asked for while TILT
  * still holds is answered `INPROG` for the failover that is still pending. So an attempt is
  * made only while `INFO sentinel` reports `sentinel_tilt:0` and a replica is promotable,
- * `INPROG` is read as "not yet" rather than as a failure, and every attempt is bounded by
+ * `INPROG` is read as "not yet" rather than as a failure — as is `NOGOODSLAVE`, which `ask`
+ * covers for a reason of its own — and every attempt is bounded by
  * what a Sentinel gives one — never by a sleep, which would state a duration this host is
  * exactly the one not to be trusted about.
  */
@@ -232,13 +235,26 @@ async function actingSentinel(
     .catch(() => false);
 }
 
-/** Ask for the failover, reading "one is already pending" as "not yet" rather than a failure. */
+/**
+ * Ask for the failover, reading every "not right now" the Sentinel has as "not yet" rather
+ * than as a failure: `INPROG`, one is already pending, and `NOGOODSLAVE`, none is promotable
+ * at this instant. The second is not the readiness condition being wrong — a failover selects
+ * its replica with `sentinelSelectSlave`, whose conditions exceed the `master-link-status: ok`
+ * this harness polls (the replica must also have answered a PING within the last five seconds
+ * and not be `S_DOWN`), so on a loaded host the `SENTINEL REPLICAS` view and the selection
+ * disagree for a beat. The Sentinel's answer is the truth, and the loop that re-checks and
+ * asks again is already bounded, so nothing here waits on a delay. A replica that never
+ * becomes promotable runs the budget out and is caught by the caller's throw.
+ */
 async function ask(sentinel: ServerClient): Promise<boolean> {
+  const notYet = [FAILOVER_IN_PROGRESS, NO_PROMOTABLE_REPLICA];
+
   return sentinel
     .sendCommand(["SENTINEL", "FAILOVER", SENTINEL_MASTER_NAME])
     .then(() => true)
     .catch((error: unknown) => {
-      if (error instanceof Error && error.message.startsWith(FAILOVER_IN_PROGRESS)) return false;
+      if (error instanceof Error && notYet.some((reply) => error.message.startsWith(reply)))
+        return false;
 
       throw error;
     });
