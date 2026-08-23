@@ -1,3 +1,4 @@
+import { hashFieldsOf } from "./hash-reply.js";
 import type { CacheEntry, Timestamp } from "./types.js";
 
 /** An Entry whose value stream has been read into bytes. */
@@ -95,4 +96,17 @@ function decodeTags(field: unknown): string[] | undefined {
   if (!Array.isArray(parsed) || parsed.some((tag) => typeof tag !== "string")) return undefined;
 
   return parsed as string[];
+}
+
+/**
+ * The Entry the read script's reply holds, or `undefined` when the key held no hash.
+ *
+ * The reply is the flat field/value array of an `HGETALL`, read through the binary type
+ * mapping that script declares, so every field of it is bytes — the names included, which
+ * the pairing decodes. A reply that is not a hash at all throws, where a hash that is not
+ * an Entry this version wrote is a miss: the first is a store answering something it should
+ * not, the second is a key another version of this library owns.
+ */
+export function parseEntryReply(reply: unknown): StoredEntry | undefined {
+  return decodeEntryHash(hashFieldsOf(reply));
 }

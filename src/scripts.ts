@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
+import { RESP_TYPES, type TypeMapping } from "redis";
 
-import { WRITE_TIME_FIELD } from "./entry-hash.js";
+import { parseEntryReply, WRITE_TIME_FIELD, type StoredEntry } from "./entry-hash.js";
 import { parseStamp } from "./handler-clock.js";
 import { parseTagRefresh, type TagRefresh } from "./tag-manifest.js";
 import type { Timestamp } from "./types.js";
@@ -113,6 +114,10 @@ ${readClock("KEYS[2]")}
 return { string.format('%d', now), string.format('%d', wallNow), redis.call('HGETALL', KEYS[1]) }
 `;
 
+const READ_ENTRY = `
+return redis.call('HGETALL', KEYS[1])
+`;
+
 const WRITE_ENTRY = `
 local writeTime = ARGV[1]
 local ttl = tonumber(ARGV[2])
@@ -120,6 +125,21 @@ redis.call('HSET', KEYS[1], '${WRITE_TIME_FIELD}', writeTime, unpack(ARGV, 3))
 redis.call('EXPIRE', KEYS[1], ttl)
 return 1
 `;
+
+/**
+ * The mapping every script but one reads its reply through: node-redis's default, which is
+ * text. It is stated per script rather than taken from the client, because a caller's own
+ * client carries whatever mapping their own code wants — one bringing blob strings back as
+ * `Buffer`, say, would hand the Tag manifest's parser bytes where it expects text.
+ */
+const TEXT_VALUES: TypeMapping = {};
+
+/**
+ * The mapping the Entry read alone declares: its values are an RSC payload, and decoding
+ * those bytes as UTF-8 would corrupt them. It brings the hash's field names back as bytes
+ * too, which the pairing of the reply decodes.
+ */
+const BINARY_VALUES: TypeMapping = { [RESP_TYPES.BLOB_STRING]: Buffer };
 
 /**
  * One Lua script this handler runs, with the digest `EVALSHA` needs and the parsing of
@@ -139,18 +159,22 @@ export interface CacheScript<Reply> {
   SHA1: string;
   /** What the script's reply means, or a throw when the server answered something else. */
   transformReply(this: void, reply: unknown): Reply;
+  /** The type mapping the reply is read through, whatever mapping the client carries. */
+  TYPE_MAPPING: TypeMapping;
 }
 
 function defineCacheScript<Reply>(
   script: string,
   numberOfKeys: number,
   transformReply: (this: void, reply: unknown) => Reply,
+  typeMapping: TypeMapping = TEXT_VALUES,
 ): CacheScript<Reply> {
   return {
     SCRIPT: script,
     NUMBER_OF_KEYS: numberOfKeys,
     SHA1: createHash("sha1").update(script).digest("hex"),
     transformReply,
+    TYPE_MAPPING: typeMapping,
   };
 }
 
@@ -166,6 +190,30 @@ function defineCacheScript<Reply>(
  * Keys: the Handler clock. No arguments.
  */
 export const tickScript: CacheScript<Timestamp> = defineCacheScript(TICK, 1, parseStamp);
+
+/**
+ * The read of one Entry: the whole hash the key holds, or nothing when it holds none.
+ *
+ * It is a script rather than the typed `HGETALL` node-redis offers, for the routing alone.
+ * `runScript` states the intent of every command it sends, and states it as a write, so a
+ * client the caller configured to read replicas — `replicaPoolSize` on a Sentinel,
+ * `useReplicas` on a Cluster — keeps sending the handler's reads to the master. A read
+ * routed to a replica is never wrong, the Tag manifest being read from the master and an
+ * Entry judged by its own Write time, but it lags replication: a `get` right after a `set`
+ * would miss and the scope would be rendered again, for as long as the lag lasts.
+ *
+ * What the typed command was chosen for it keeps: a script's reply is RESP2-shaped on every
+ * connection, where `HGETALL` answers a flat array on RESP2 and a map on RESP3, so the one
+ * pairing of `hashFieldsOf` reads it whatever the caller's client speaks.
+ *
+ * Keys: the Entry. No arguments.
+ */
+export const readEntryScript: CacheScript<StoredEntry | undefined> = defineCacheScript(
+  READ_ENTRY,
+  1,
+  parseEntryReply,
+  BINARY_VALUES,
+);
 
 /**
  * The write unit of one Entry: the hash fields, the Write time the caller computed from

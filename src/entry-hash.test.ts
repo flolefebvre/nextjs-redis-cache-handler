@@ -4,6 +4,7 @@ import {
   WRITE_TIME_FIELD,
   decodeEntryHash,
   encodeEntryFields,
+  parseEntryReply,
   type BufferedEntry,
 } from "./entry-hash.js";
 
@@ -73,4 +74,26 @@ test("a hash whose timings or tags are unreadable is not an Entry", () => {
   expect(decodeEntryHash({ ...complete, tags: Buffer.from("posts") })).toBeUndefined();
   expect(decodeEntryHash({ ...complete, tags: Buffer.from('{"a":1}') })).toBeUndefined();
   expect(decodeEntryHash({ ...complete, [WRITE_TIME_FIELD]: Buffer.from("") })).toBeUndefined();
+});
+
+test("an Entry survives the round trip through the reply of the read script", () => {
+  const written = encodeEntryFields(entry);
+  const reply = [WRITE_TIME_FIELD, "1787325433600", ...written].map((field) =>
+    Buffer.isBuffer(field) ? field : Buffer.from(field),
+  );
+
+  const stored = parseEntryReply(reply);
+
+  expect(stored && { ...stored, value: Uint8Array.from(stored.value) }).toEqual({
+    ...entry,
+    writeTime: 1787325433600,
+  });
+});
+
+test("the reply for a key the store holds nothing for is not an Entry", () => {
+  expect(parseEntryReply([])).toBeUndefined();
+});
+
+test("a reply that is not a hash at all is a failure, not a miss", () => {
+  expect(() => parseEntryReply("entry")).toThrow();
 });
