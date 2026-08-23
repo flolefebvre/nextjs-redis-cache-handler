@@ -366,9 +366,10 @@ export async function acrossADisturbance(
   return disturbed;
 }
 
-/** How long a killed node connection is given to be reported, and the cell around it. */
+/** How long a killed node connection is given to be reported. */
 const REPORTED_TIMEOUT_MS = 10_000;
 
+/** How long the cell around it may take: that wait, and the two Instances on either side. */
 const NODE_FAILURE_TIMEOUT_MS = 60_000;
 
 /** The address of the node a reported failure names, as every kind that names one spells it. */
