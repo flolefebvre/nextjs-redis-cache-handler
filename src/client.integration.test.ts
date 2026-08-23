@@ -4,6 +4,7 @@ import { createClient } from "redis";
 import { expect, inject, onTestFinished, test, vi } from "vitest";
 
 import { opsOf, recording, serverClient } from "../tests/handler-harness.js";
+import { stopwatch } from "../tests/unit-harness.js";
 import { createCacheClient, type CacheClient, type CacheCommands } from "./client.js";
 import { createRedisCacheHandler } from "./redis-cache-handler.js";
 
@@ -11,6 +12,24 @@ const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP", "SIGUSR2"] as const;
 
 /** A retry budget short enough that a write which can only fail is not waited out. */
 const RETRY_BUDGET = 200;
+
+/** How long a handshake nothing answers may hold the socket: the client's idle timeout. */
+const HANDSHAKE_BOUND = 15_000;
+
+/** What a loaded host may add to it, and still be nowhere near the 30 s of a default client. */
+const NOTICE_MARGIN = 8_000;
+
+/** A deadline long enough to tell an operation waiting on the handshake from one failing at once. */
+const PATIENT_TIMEOUT = 2_000;
+
+/** What "at once" means for an operation that has nothing left to wait on. */
+const PROMPT_MS = 500;
+
+/** How often a cell asks again while it waits for the client to notice. */
+const POLL_MS = 50;
+
+/** The failure a handler hands back when its client has no connection, which a read reads as `unavailable`. */
+const NOT_CONNECTED = /not connected/;
 
 function freshPrefix(): string {
   return `cache-test:${randomUUID()}:`;
@@ -79,6 +98,51 @@ test("close() returns while a connection to an unresponsive server is still pend
   await expect(refreshing).resolves.toBeUndefined();
   expect(await handler.get("anything", [])).toBeUndefined();
 });
+
+/**
+ * A TCP accept followed by silence — a proxy or a port forwarder in front of a dead server
+ * — is not a failed connection: node-redis sends `HELLO` and waits, and only the idle
+ * timeout tears the socket down. Until it does, every operation spends its whole deadline;
+ * after it, the client has been seen failing and each one is handed the not-connected
+ * error at once, which a read reports as a miss `unavailable`.
+ */
+test(
+  "an operation against a silent handshake stops waiting out its deadline within the bound",
+  { timeout: HANDSHAKE_BOUND + NOTICE_MARGIN + PATIENT_TIMEOUT * 4 },
+  async () => {
+    const listener = await countingListener();
+    const recorded = recording();
+    const handler = createRedisCacheHandler({
+      url: listener.url,
+      keyPrefix: freshPrefix(),
+      operationTimeout: PATIENT_TIMEOUT,
+      ...recorded.hooks,
+    });
+    onTestFinished(() => handler.close());
+
+    const first = stopwatch();
+    await handler.refreshTags();
+    const waitedMs = first();
+    const elapsed = stopwatch();
+    await vi.waitUntil(
+      async () => {
+        const attempt = stopwatch();
+        await handler.refreshTags();
+
+        return attempt() < PROMPT_MS;
+      },
+      { timeout: HANDSHAKE_BOUND + NOTICE_MARGIN, interval: POLL_MS },
+    );
+    const noticedMs = elapsed();
+
+    const refreshFailures = recorded.errors
+      .filter(([, op]) => op === "refreshTags")
+      .map(([error]) => String(error));
+    expect(waitedMs).toBeGreaterThanOrEqual(PATIENT_TIMEOUT - POLL_MS);
+    expect(noticedMs).toBeLessThan(HANDSHAKE_BOUND + NOTICE_MARGIN);
+    expect(refreshFailures.at(-1)).toMatch(NOT_CONNECTED);
+  },
+);
 
 test("close() resolves on a handler that has read and written", async () => {
   const handler = createRedisCacheHandler({ url: inject("redisUrl"), keyPrefix: freshPrefix() });
