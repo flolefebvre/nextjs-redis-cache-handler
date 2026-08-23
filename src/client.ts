@@ -39,9 +39,10 @@ export function reconnectDelay(retries: number): number {
  * It cannot go much lower: it is an idle timeout, so it also fires on a healthy
  * connection nothing has sent anything on. `pingInterval` is what keeps such a connection
  * busy, one `PING` every 10 s re-armed once the reply is in, and 15 s is that floor plus
- * the round trip and the event-loop lag of a loaded host. Halving the ping period instead,
- * to bring the bound down to the order of `connectTimeout`, would put a permanent `PING`
- * every couple of seconds on the store of every Instance to shorten one rare failure.
+ * the round trip and the event-loop lag of a loaded host. Cutting the ping period to a
+ * couple of seconds instead, which is what bringing the bound down to the order of
+ * `connectTimeout` would take, would put a `PING` on that period on the store of every
+ * Instance for as long as it runs, to shorten one rare failure.
  */
 function createTunedClient(url: string) {
   return createClient({
