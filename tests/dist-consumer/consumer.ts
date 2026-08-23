@@ -4,6 +4,9 @@ import {
   createRedisCacheHandler,
   optionsFromEnv,
   type CacheClient,
+  type CacheCommands,
+  type ClusterCacheCommands,
+  type SentinelCacheCommands,
   handlerPath,
   type CacheEntry,
   type CacheErrorHook,
@@ -58,10 +61,15 @@ const injected: CacheClient = createClient({ url: "redis://localhost:6379" });
 
 const clustered: CacheClient = createCluster({ rootNodes: [{ url: "redis://localhost:7000" }] });
 
+const standaloneCommands: CacheCommands = injected.withTypeMapping({});
+const clusterCommands: ClusterCacheCommands = clustered.withTypeMapping({});
+
 const watched: CacheClient = createSentinel({
   name: "mymaster",
   sentinelRootNodes: [{ host: "localhost", port: 26379 }],
 });
+
+const sentinelCommands: SentinelCacheCommands = watched.withTypeMapping({});
 
 const fromEnvironment: RedisCacheHandlerOptions | undefined = optionsFromEnv(process.env);
 
@@ -87,6 +95,9 @@ export function consume(): void {
     createRedisCacheHandler(withSentinelClient);
 
   void injecting;
+  void standaloneCommands;
+  void clusterCommands;
+  void sentinelCommands;
   void clustering;
   void watching;
 
