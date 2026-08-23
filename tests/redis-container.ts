@@ -221,7 +221,13 @@ const SENTINEL_READY = "SENTINEL READY";
 /** The name the Sentinel deployment watches its master under. */
 export const SENTINEL_MASTER_NAME = "mymaster";
 
-const CLUSTER_NODES = 3;
+const CLUSTER_ANNOUNCE_IP = "127.0.0.1";
+
+const CLUSTER_MASTERS = 3;
+
+const CLUSTER_REPLICAS_PER_MASTER = 1;
+
+const CLUSTER_NODES = CLUSTER_MASTERS * (1 + CLUSTER_REPLICAS_PER_MASTER);
 
 const BUS_PORT_OFFSET = 10_000;
 
@@ -276,21 +282,73 @@ function answering(ports: number[]): string {
 }
 
 /**
- * Start a Cluster for one test file: three masters, no replica, every slot covered.
+ * The wait for a Cluster whose replicas are up and reachable, asked of the nodes themselves
+ * rather than of the create that asked for them.
+ *
+ * `cluster_state:ok` says every slot is covered, which the masters answer on their own: it
+ * holds before a replica has synced and long before any node publishes one, and a client
+ * built with `useReplicas` at that moment is handed a topology with no replica to route to
+ * — under which a cell asserting the handler's reads stay on the master is green having
+ * proven nothing.
+ *
+ * So two more things are waited on. Each master is asked whether it counts its replica and
+ * each replica whether its link to the master is up, out of `INFO replication`: that is the
+ * replica holding the data. Then every node is asked for `CLUSTER SLOTS` until it lists all
+ * six announced addresses: that is the replica being routable, and it is the view a client
+ * builds its own from. The second is the later of the two by seconds — a master publishes a
+ * replica there only once the cluster bus has been round it — and it is the one a replica
+ * read depends on, so neither stands for the other.
+ *
+ * Both are read with commands the supported floor has: `CLUSTER SHARDS` states all of it in
+ * one reply but is Redis 7.0 and up, while the floor is 6.2, whose `CLUSTER SLOTS` reply
+ * differs only by the trailing metadata map — not by the addresses counted here.
+ */
+function replicated(ports: number[]): string {
+  const infos = ports.map((port) => `redis-cli -p ${String(port)} info replication`).join("; ");
+  const linked = `^(connected_slaves:${String(CLUSTER_REPLICAS_PER_MASTER)}|master_link_status:up)`;
+  const routable = ports.map(
+    (port) =>
+      `until [ "$(redis-cli -p ${String(port)} cluster slots | grep -c '^${CLUSTER_ANNOUNCE_IP}$')"` +
+      ` = ${String(CLUSTER_NODES)} ]; do sleep 0.2; done`,
+  );
+
+  return [
+    `until [ "$({ ${infos}; } | grep -Ec '${linked}')" = ${String(CLUSTER_NODES)} ]; do sleep 0.2; done`,
+    ...routable,
+  ].join("\n");
+}
+
+/**
+ * Start a Cluster for one test file: three masters with one replica each, every slot
+ * covered. The replicas are three more `redis-server` processes in the same container and
+ * `--cluster-replicas` on the create, not three more containers, and `nodeUrls` lists every
+ * one of the six — a test reads the `MONITOR` stream of a replica as it does of a master.
  *
  * Each node announces `127.0.0.1` and the very port it listens on, so the `MOVED` a node
  * answers with sends the client to an address the host can dial. The bus ports are the
  * announced ports plus the usual offset and are never published: the nodes gossip over
  * loopback inside the container, and a client never dials one.
+ *
+ * It is ready in two stages, because a replica being up and a replica being routable are
+ * not the same instant and here they are some eight seconds apart. The link comes up first
+ * — `INFO replication` reports the master counting its replica and the replica following it
+ * — and only later does a master publish that replica in `CLUSTER SLOTS`, which is the view
+ * a client builds its routing from and the only one that decides where a replica read goes.
+ * So the second stage waits every node's own `CLUSTER SLOTS` out, on every node because a
+ * client may bootstrap its topology from any of the root nodes it was given. It is the same
+ * kind of rule as the Sentinel deployment's `master-link-status` wait and for the same
+ * reason: a deployment handed over before the view it is used through agrees is one whose
+ * cells assert against a topology that is not there yet.
  */
 export async function startClusterRedis(image: string): Promise<RunningTopology> {
   const ports = await Promise.all(Array.from({ length: CLUSTER_NODES }, () => freeHostPort()));
-  const addresses = ports.map((port) => `127.0.0.1:${String(port)}`);
+  const addresses = ports.map((port) => `${CLUSTER_ANNOUNCE_IP}:${String(port)}`);
   const nodes = ports
     .map(
       (port) =>
         `redis-server --port ${String(port)} ${VOLATILE} --cluster-enabled yes` +
-        ` --cluster-config-file /tmp/node-${String(port)}.conf --cluster-announce-ip 127.0.0.1` +
+        ` --cluster-config-file /tmp/node-${String(port)}.conf` +
+        ` --cluster-announce-ip ${CLUSTER_ANNOUNCE_IP}` +
         ` --cluster-announce-port ${String(port)}` +
         ` --cluster-announce-bus-port ${String(port + BUS_PORT_OFFSET)} &`,
     )
@@ -301,15 +359,16 @@ export async function startClusterRedis(image: string): Promise<RunningTopology>
     ports,
     `${nodes}
 ${answering(ports)}
-redis-cli --cluster create ${addresses.join(" ")} --cluster-yes
+redis-cli --cluster create ${addresses.join(" ")} --cluster-replicas ${String(CLUSTER_REPLICAS_PER_MASTER)} --cluster-yes
 until redis-cli -p ${first} cluster info | grep -q cluster_state:ok; do sleep 1; done
+${replicated(ports)}
 echo ${CLUSTER_READY}
 wait`,
     CLUSTER_READY,
   );
 
   return {
-    nodeUrls: ports.map((port) => `redis://127.0.0.1:${String(port)}`),
+    nodeUrls: ports.map((port) => `redis://${CLUSTER_ANNOUNCE_IP}:${String(port)}`),
     stop: async () => {
       await container.stop({ remove: true });
     },
