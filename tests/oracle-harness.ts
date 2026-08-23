@@ -76,6 +76,13 @@ export type ProjectedRead =
  * so Soft tags only reach it through that rule, while ours answers `Infinity` and compares
  * them in `get`. What a render ends up serving is the same either way, which is what the
  * projection compares.
+ *
+ * It stops there, and never goes on to the wrapper's own `expire` and `revalidate`
+ * arithmetic (steps 6 and 7): those are computed from fields both handlers hand back
+ * unchanged and this projection already compares, so folding them in would add no
+ * comparison and would mask a handler that started serving an Entry past its `expire`, or
+ * stopped flagging one as Stale. Step 5 is in only because the Soft-tag verdict is a
+ * handler decision one side defers to the wrapper, which is what makes the two comparable.
  */
 export async function projectRead(
   handler: CacheHandler,
