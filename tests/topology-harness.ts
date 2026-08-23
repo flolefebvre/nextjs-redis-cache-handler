@@ -11,11 +11,12 @@ import {
   entryOf,
   freshPrefix,
   readAfterRefresh,
+  serverClient,
   storeBefore,
   tagCommandNames,
   VALUE,
 } from "./handler-harness.js";
-import type { RunningTopology } from "./redis-container.js";
+import { SENTINEL_MASTER_NAME, type RunningTopology } from "./redis-container.js";
 
 /** A deployment one test file owns, and the client the handler is given for it. */
 export interface Topology {
@@ -78,6 +79,38 @@ interface ConnectableClient {
 
 /** The command every test sends to drop the connections a client holds to one node. */
 export const KILL_CONNECTIONS = ["CLIENT", "KILL", "TYPE", "normal"];
+
+/** How often a Sentinel is asked again whether it has a replica it would promote. */
+const POLL_MS = 200;
+
+/**
+ * Wait until the Sentinel has a replica it would promote: one whose link to the master it
+ * reports as up.
+ *
+ * A failover asked for before that view says `ok` is accepted, finds no replica it may
+ * promote, and is abandoned on `failover-timeout` — no `topology-change` is emitted at
+ * all, so a cell that asked for one and then waited for the promotion waits for something
+ * that never comes. The view is the Sentinel's own and it refreshes it on its `INFO`
+ * period, ten seconds, so it reports the stale `err` it last saw for that long after a
+ * cell killed the connections on the data ports, the Sentinel's own links among them.
+ * The deployment is not handed over until it says `ok` either, for the same reason.
+ */
+export async function promotableReplica(sentinelUrl: string): Promise<void> {
+  const sentinel = await serverClient(sentinelUrl);
+
+  await vi.waitUntil(
+    async () => {
+      const replicas = (await sentinel.sendCommand([
+        "SENTINEL",
+        "REPLICAS",
+        SENTINEL_MASTER_NAME,
+      ])) as Record<string, string>[];
+
+      return replicas.some((replica) => replica["master-link-status"] === "ok");
+    },
+    { interval: POLL_MS },
+  );
+}
 
 /** What a deployment showed of itself while a connection under it was rebuilt. */
 export interface Disturbed {

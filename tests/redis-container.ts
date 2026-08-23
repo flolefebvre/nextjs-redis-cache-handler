@@ -159,7 +159,8 @@ const CLUSTER_READY = "CLUSTER READY";
 
 const SENTINEL_READY = "SENTINEL READY";
 
-const MASTER_NAME = "mymaster";
+/** The name the Sentinel deployment watches its master under. */
+export const SENTINEL_MASTER_NAME = "mymaster";
 
 const CLUSTER_NODES = 3;
 
@@ -204,6 +205,18 @@ async function startTopology(
 }
 
 /**
+ * The wait for every one of these servers to be answering, before a script asks anything
+ * of them. A server started in the background is not listening yet, and how long it takes
+ * is not something a `sleep` can know: under CI load a `--cluster create` sent too early
+ * fails outright, and what a test then sees is the readiness wait timing out.
+ */
+function answering(ports: number[]): string {
+  return ports
+    .map((port) => `until redis-cli -p ${String(port)} ping | grep -q PONG; do sleep 0.2; done`)
+    .join("\n");
+}
+
+/**
  * Start a Cluster for one test file: three masters, no replica, every slot covered.
  *
  * Each node announces `127.0.0.1` and the very port it listens on, so the `MOVED` a node
@@ -228,7 +241,7 @@ export async function startClusterRedis(image: string): Promise<RunningTopology>
     image,
     ports,
     `${nodes}
-sleep 2
+${answering(ports)}
 redis-cli --cluster create ${addresses.join(" ")} --cluster-yes
 until redis-cli -p ${first} cluster info | grep -q cluster_state:ok; do sleep 1; done
 echo ${CLUSTER_READY}
@@ -252,6 +265,10 @@ wait`,
  * hands out — and the replica address it learns from the master's `INFO` — dialable from
  * the host. The failure detection is turned down to a second so a test does not wait a
  * default minute for a rebuild to be noticed.
+ *
+ * It is ready only once the Sentinel reports the replica's link to the master as `ok`,
+ * which is the same rule `promotableReplica` waits on before a failover and for the same
+ * reason: a failover asked for while that view says `err` is abandoned silently.
  */
 export async function startSentinelRedis(image: string): Promise<RunningSentinel> {
   const [master, replica, sentinel] = await Promise.all([
@@ -268,15 +285,16 @@ export async function startSentinelRedis(image: string): Promise<RunningSentinel
     ports,
     `redis-server --port ${masterPort} ${VOLATILE} &
 redis-server --port ${replicaPort} ${VOLATILE} --replicaof 127.0.0.1 ${masterPort} &
-sleep 2
+${answering([master, replica])}
 {
   echo "port ${sentinelPort}"
-  echo "sentinel monitor ${MASTER_NAME} 127.0.0.1 ${masterPort} 1"
-  echo "sentinel down-after-milliseconds ${MASTER_NAME} ${String(DOWN_AFTER_MS)}"
-  echo "sentinel failover-timeout ${MASTER_NAME} ${String(FAILOVER_TIMEOUT_MS)}"
+  echo "sentinel monitor ${SENTINEL_MASTER_NAME} 127.0.0.1 ${masterPort} 1"
+  echo "sentinel down-after-milliseconds ${SENTINEL_MASTER_NAME} ${String(DOWN_AFTER_MS)}"
+  echo "sentinel failover-timeout ${SENTINEL_MASTER_NAME} ${String(FAILOVER_TIMEOUT_MS)}"
 } > /tmp/sentinel.conf
 redis-server /tmp/sentinel.conf --sentinel &
-until redis-cli -p ${sentinelPort} sentinel get-master-addr-by-name ${MASTER_NAME} | grep -q 127.0.0.1; do sleep 1; done
+until redis-cli -p ${sentinelPort} sentinel get-master-addr-by-name ${SENTINEL_MASTER_NAME} | grep -q 127.0.0.1; do sleep 0.2; done
+until redis-cli -p ${sentinelPort} sentinel replicas ${SENTINEL_MASTER_NAME} | grep -A 1 master-link-status | grep -qx ok; do sleep 0.2; done
 echo ${SENTINEL_READY}
 wait`,
     SENTINEL_READY,

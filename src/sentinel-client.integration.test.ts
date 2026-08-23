@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { serverClient, wait } from "../tests/handler-harness.js";
 import {
   providedRedisUrl,
+  SENTINEL_MASTER_NAME,
   startSentinelRedis,
   testImage,
   type RunningSentinel,
@@ -13,11 +14,10 @@ import {
   connected,
   KILL_CONNECTIONS,
   onEveryNode,
+  promotableReplica,
   sharesTheStore,
   stopped,
 } from "../tests/topology-harness.js";
-
-const MASTER_NAME = "mymaster";
 
 const DEPLOYMENT_TIMEOUT = 180_000;
 
@@ -35,7 +35,7 @@ describe.skipIf(providedRedisUrl() !== undefined)("an injected Sentinel client",
     const { hostname, port } = new URL(deployment.sentinelUrl);
     client = await connected(
       createSentinel({
-        name: MASTER_NAME,
+        name: SENTINEL_MASTER_NAME,
         sentinelRootNodes: [{ host: hostname, port: Number(port) }],
       }),
     );
@@ -68,9 +68,11 @@ describe.skipIf(providedRedisUrl() !== undefined)("an injected Sentinel client",
       const topology = { client, nodeUrls: deployment.nodeUrls };
 
       const disturbed = await acrossADisturbance(topology, async () => {
-        const promoted = new Promise((resolve) => client.once("topology-change", resolve));
+        await promotableReplica(deployment.sentinelUrl);
         const sentinel = await serverClient(deployment.sentinelUrl);
-        await sentinel.sendCommand(["SENTINEL", "FAILOVER", MASTER_NAME]);
+        const promoted = new Promise((resolve) => client.once("topology-change", resolve));
+
+        await sentinel.sendCommand(["SENTINEL", "FAILOVER", SENTINEL_MASTER_NAME]);
         await promoted;
       });
 
