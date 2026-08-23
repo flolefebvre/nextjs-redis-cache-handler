@@ -140,17 +140,7 @@ test("both reads of the Tag manifest stay within the portable command set", asyn
 
   const names = new Set(tagCommandNames(await stream.settled(), keyPrefix));
   expect(names).toEqual(
-    new Set([
-      "EVALSHA",
-      "GET",
-      "HGETALL",
-      "ZCARD",
-      "HLEN",
-      "ZRANGE",
-      "HMGET",
-      "HSET",
-      "ZADD",
-    ]),
+    new Set(["EVALSHA", "GET", "HGETALL", "ZCARD", "HLEN", "ZRANGE", "HMGET", "HSET", "ZADD"]),
   );
 });
 
