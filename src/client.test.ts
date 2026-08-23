@@ -58,14 +58,29 @@ test("a Sentinel client is one, and is told apart from a Cluster client", () => 
   expect([clientKind(sentinel), clientKind(cluster)]).toEqual(["sentinel", "cluster"]);
 });
 
+/**
+ * An injected client as the cell below holds one: what the handler is given, and the count
+ * of listeners the cell reads back off it.
+ *
+ * Every factory of the table states it as its return type, so that each concrete node-redis
+ * client is checked against `CacheClient` where it is built, on its own. Left to infer, the
+ * three would meet in one position and be weighed against each other instead — see the rule
+ * in `docs/codebase/testing.md`.
+ */
+type InjectedClient = CacheClient & { listenerCount(event: string): number };
+
 test.each([
-  ["standalone", () => createClient({ url: URL }), "reconnecting"],
+  ["standalone", (): InjectedClient => createClient({ url: URL }), "reconnecting"],
   [
     "sentinel",
-    () => createSentinel({ name: "mymaster", sentinelRootNodes: [SENTINEL_NODE] }),
+    (): InjectedClient => createSentinel({ name: "mymaster", sentinelRootNodes: [SENTINEL_NODE] }),
     "client-error",
   ],
-  ["cluster", () => createCluster({ rootNodes: [{ url: URL }] }), "node-reconnecting"],
+  [
+    "cluster",
+    (): InjectedClient => createCluster({ rootNodes: [{ url: URL }] }),
+    "node-reconnecting",
+  ],
 ] as const)(
   "an injected %s client is listened to on the event its kind names, and is left as it was found",
   async (_kind, build, rebuilt) => {
