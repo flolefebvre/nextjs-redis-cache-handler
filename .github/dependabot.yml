@@ -1,0 +1,30 @@
+version: 2
+
+updates:
+  # One entry for the whole pnpm workspace: the root manifest, the Fixture app and the
+  # dist consumer share a single lockfile, so a single directory is what Dependabot
+  # resolves against.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      # Everything but Next.js in one pull request: these are dev tooling and the
+      # Fixture's React pins, and a green `ci` job is the whole verdict on them.
+      dev-dependencies:
+        patterns:
+          - "*"
+        # Excluded from the group, so `next` — the only dependency this library wraps an
+        # interface of — lands on a pull request of its own: a Next.js release that
+        # changes what the handler is asked to do has to show up as a red `e2e` job by
+        # itself, not buried in a tooling bump.
+        exclude-patterns:
+          - "next"
+
+  # The workflows' own actions. Monthly: they move slowly, and a stale major here is a
+  # deprecation warning rather than a broken build.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
