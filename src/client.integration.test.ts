@@ -4,7 +4,7 @@ import { createClient } from "redis";
 import { expect, inject, onTestFinished, test, vi } from "vitest";
 
 import { opsOf, recording, serverClient } from "../tests/handler-harness.js";
-import { createCacheClient } from "./client.js";
+import { createCacheClient, type CacheClient, type CacheCommands } from "./client.js";
 import { createRedisCacheHandler } from "./redis-cache-handler.js";
 
 const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP", "SIGUSR2"] as const;
@@ -167,9 +167,14 @@ test("close() leaves an injected client with no listener of the handler's on it"
 test("close() quits a client the handler created from a url", async () => {
   const handle = createCacheClient({ url: inject("redisUrl") }, () => undefined);
   const client = await handle.connected();
-  expect(await client.withTypeMapping({}).sendCommand(["PING"])).toBe("PONG");
+  expect(await ping(client)).toBe("PONG");
 
   await handle.close();
 
-  await expect(client.withTypeMapping({}).sendCommand(["PING"])).rejects.toThrowError();
+  await expect(ping(client)).rejects.toThrowError();
 });
+
+/** A round trip on a client the handler built itself, which is a standalone one. */
+function ping(client: CacheClient): Promise<unknown> {
+  return (client.withTypeMapping({}) as CacheCommands).sendCommand(["PING"]);
+}

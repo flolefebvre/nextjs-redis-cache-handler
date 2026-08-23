@@ -39,9 +39,9 @@ function createTunedClient(url: string) {
 }
 
 /**
- * The commands one operation runs, on a client view with a chosen type mapping: the raw
- * command channel the Lua scripts go through, and the one typed command the handler
- * reads an Entry with.
+ * The commands one operation runs on a standalone client, on a view with a chosen type
+ * mapping: the raw command channel the Lua scripts go through, and the one typed command
+ * the handler reads an Entry with.
  *
  * `hGetAll` is typed rather than sent as a raw command because a raw reply is not
  * normalised across RESP versions — a flat array on RESP2, a map on RESP3 — while a Lua
@@ -59,21 +59,55 @@ export interface CacheCommands {
   hGetAll(key: RedisArgument): Promise<Record<string, unknown>>;
 }
 
-/** What the handler listens to on its client: a failure, and a connection being rebuilt. */
-export type CacheClientEvent = "error" | "reconnecting";
+/**
+ * The same commands on a Sentinel client, which takes the read/write intent of a command
+ * before its arguments: it is what decides whether the command goes to the master or to a
+ * replica. The handler always asks for the master.
+ */
+export interface SentinelCacheCommands {
+  /** Send one command, told whether it may run on a replica. */
+  sendCommand(isReadonly: boolean, args: readonly RedisArgument[]): Promise<unknown>;
+  /** Every field of one hash, on the node the client routes it to. */
+  hGetAll(key: RedisArgument): Promise<Record<string, unknown>>;
+}
 
 /**
- * The client every operation of one handler object runs on: what the handler uses of a
- * node-redis client, and nothing more.
+ * The same commands on a Cluster client, which takes the key that routes the command
+ * before its intent: the slot of that key is the node the command is sent to. Every
+ * script this library runs states its routing key as `KEYS[1]`.
+ */
+export interface ClusterCacheCommands {
+  /** Send one command, routed by the given key, told whether it may run on a replica. */
+  sendCommand(
+    firstKey: RedisArgument,
+    isReadonly: boolean,
+    args: readonly RedisArgument[],
+  ): Promise<unknown>;
+  /** Every field of one hash, on the node the key's slot belongs to. */
+  hGetAll(key: RedisArgument): Promise<Record<string, unknown>>;
+}
+
+/**
+ * What the handler listens to on its client, over the three kinds: a failure, and a
+ * connection being rebuilt — which each kind names differently, and one of them does not
+ * name at all. `clientKind` decides which of these one client is subscribed to.
+ */
+export type CacheClientEvent =
+  "error" | "reconnecting" | "node-reconnecting" | "client-error" | "topology-change";
+
+/**
+ * A client of one kind: what the handler uses of a node-redis client, and nothing more.
  *
  * It is this narrow structurally, rather than node-redis's `RedisClientType`, so that a
  * client the caller injected satisfies it whatever its generic parameters. A client
  * created with custom scripts, or with `RESP: 2`, is not assignable to `RedisClientType`
- * at all, and this library has no reason to know about either.
+ * at all, and this library has no reason to know about either. The events are one union
+ * for every kind because all three clients are plain event emitters: subscribing is what
+ * differs, not what may be named.
  */
-export interface CacheClient {
+export interface CacheClientOf<Commands> {
   /** This client, seen through the given type mapping. */
-  withTypeMapping(typeMapping: TypeMapping): CacheCommands;
+  withTypeMapping(typeMapping: TypeMapping): Commands;
   /**
    * Listen to the client's failures, inside an operation and outside any, and to its
    * connection being rebuilt.
@@ -82,6 +116,64 @@ export interface CacheClient {
   /** Stop listening: what `close()` undoes of what the handler attached. */
   off(event: CacheClientEvent, listener: (payload: unknown) => void): unknown;
 }
+
+/**
+ * The client every operation of one handler object runs on: a standalone node-redis
+ * client, a Sentinel client, or a Cluster client. The three differ in exactly one member
+ * the handler uses — the arguments `sendCommand` takes — and `runScript` is the only
+ * place that difference is spelled out.
+ */
+export type CacheClient =
+  | CacheClientOf<CacheCommands>
+  | CacheClientOf<SentinelCacheCommands>
+  | CacheClientOf<ClusterCacheCommands>;
+
+/** Which of the three node-redis clients one injected client is. */
+export type CacheClientKind = "standalone" | "sentinel" | "cluster";
+
+const NODE_CLIENT = "nodeClient";
+
+const EXECUTE = "_execute";
+
+/**
+ * Which kind a client is: the one structural check of this library, whose answer decides
+ * how `runScript` calls `sendCommand` and which event a rebuilt connection is counted on.
+ *
+ * It is structural rather than an `instanceof`, because a caller's client may come from
+ * another copy of node-redis, and it reads a member rather than an arity, because the
+ * number of parameters a function declares is not a contract anyone maintains. A Cluster
+ * client is the one that routes by node, so it is the one that owns `nodeClient`; of the
+ * two left, a Sentinel client is the one that executes through a node it leases, which is
+ * `_execute` — the leased `RedisSentinelClient` has that but not the `use` of the
+ * `RedisSentinel` it came from, so `use` would read a leased client as standalone and send
+ * it a command list where it expects a read/write intent. A standalone client has neither.
+ *
+ * The order is what makes `_execute` sound: a Cluster client has one too, and has already
+ * been answered for by the time it is read.
+ */
+export function clientKind(client: CacheClient): CacheClientKind {
+  if (NODE_CLIENT in client) return "cluster";
+  if (EXECUTE in client) return "sentinel";
+
+  return "standalone";
+}
+
+/**
+ * The event each kind emits when a connection under it is rebuilt.
+ *
+ * A standalone client says `reconnecting` for itself, and a Cluster client says
+ * `node-reconnecting` for the node whose socket is coming back. A Sentinel client says
+ * nothing of the sort: it rebuilds its node clients out of sight, and the only things it
+ * lets out are the error of a node (`client-error`) and a change of topology
+ * (`topology-change`), which is why both are counted here. Counting more often than a
+ * connection is really rebuilt costs one full read of the Tag manifest; counting less
+ * often loses the events written while it was down.
+ */
+const RECONNECT_EVENTS: Record<CacheClientKind, readonly CacheClientEvent[]> = {
+  standalone: ["reconnecting"],
+  sentinel: ["client-error", "topology-change"],
+  cluster: ["node-reconnecting"],
+};
 
 /**
  * The client of one handler object, whoever owns it: the same two calls whether the
@@ -139,28 +231,29 @@ export function createCacheClient(
 }
 
 /**
- * Attach what the handler listens to, on a client of either kind: the `error` listener
- * node-redis crashes the process without, and the count of reconnections a refresh of the
- * Tag manifest reads. `detach` takes back exactly these two listeners, so that one
- * long-lived injected client feeding many handler objects collects none of them. It is
- * for an injected client only: a client the handler owns keeps its `error` listener to
- * the end, since a socket error surfacing after `close()` on a client that has none
- * crashes the process.
+ * Attach what the handler listens to, on a client of any of the three kinds: the `error`
+ * listener node-redis crashes the process without, and the count of reconnections a
+ * refresh of the Tag manifest reads, on whichever events that kind names one by. `detach`
+ * takes back exactly the listeners it attached, so that one long-lived injected client
+ * feeding many handler objects collects none of them. It is for an injected client only:
+ * a client the handler owns keeps its `error` listener to the end, since a socket error
+ * surfacing after `close()` on a client that has none crashes the process.
  */
 function listenTo(client: CacheClient, report: (error: unknown) => void) {
   let reconnects = 0;
   const count = (): void => {
     reconnects += 1;
   };
+  const rebuilt = RECONNECT_EVENTS[clientKind(client)];
 
   client.on("error", report);
-  client.on("reconnecting", count);
+  for (const event of rebuilt) client.on(event, count);
 
   return {
     reconnects: (): number => reconnects,
     detach: (): void => {
       client.off("error", report);
-      client.off("reconnecting", count);
+      for (const event of rebuilt) client.off(event, count);
     },
   };
 }
