@@ -5,6 +5,7 @@
 - Run the checks as one job step per `gate` script, in the gate's order, so a failing check names itself in the run summary.
 - Pin `node-version` to the major the repo is developed on. `engines` only sets a floor (`>=22.12.0`), so a spec taken from it would let CI drift onto a major nobody has run.
 - Keep `pnpm/action-setup` ahead of `actions/setup-node`, which needs pnpm on the PATH for `cache: pnpm`. The repo has no `packageManager` pin — a published library must not impose one on its consumers' toolchain — so the pnpm major is named in the workflow.
+- `typecheck` runs `tsc` under `node --max-old-space-size=4096`. The program it checks is dominated by `@redis/client`'s generic client types — since #73's `CacheClient` union it instantiates ~1.8 M types and peaks near 2.6 GB, past the default heap of the runner's Node, which aborts the step with `JavaScript heap out of memory`. The flag is the symptom's fix; the cause is tracked in #77.
 - The Test step needs the runner's Docker daemon: the `integration` project starts its own throwaway Valkey.
 - The `e2e` job is separate, and runs on every pull request like the gate: it installs, runs `pnpm build` — the Fixture app consumes the built output through the `exports` map — and then `pnpm test:e2e`, which is also the gate's last step. Its budget is minutes rather than seconds, so it carries its own `timeout-minutes` (10, for a 2–4 minute run) and leaves the `ci` job's alone.
 
