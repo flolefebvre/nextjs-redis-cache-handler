@@ -28,6 +28,12 @@ const SMOKES: Smoke[] = [
   },
   { what: "the entry with no REDIS_URL", file: "smoke.mjs", expected: /^[^\n]*REDIS_URL[^\n]*\n$/ },
   {
+    what: "the README's next.config.mjs snippet",
+    file: "smoke.next-config.mjs",
+    url: NO_SERVER_THERE,
+    expected: "",
+  },
+  {
     what: "both entries under the edge-light condition",
     file: "smoke.edge.mjs",
     url: NO_SERVER_THERE,
