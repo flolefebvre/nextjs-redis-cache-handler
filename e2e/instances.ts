@@ -54,6 +54,10 @@ export interface Instances {
    * instant it was rendered at before: a revalidation reaches an Instance when it reads the
    * Tag manifest again, and a Stale one regenerates in the background, neither of which any
    * instant of a Scenario's clock names.
+   *
+   * Only a 200 that carries the marker ends the wait. A page that failed, or one that
+   * rendered the scope away, has a marker of `undefined`, which differs from every instant
+   * and would end the wait on an observation nobody made.
    */
   markersOnceChanged(
     instance: InstanceName,
@@ -109,9 +113,11 @@ export async function startInstances(scenario: string): Promise<Instances> {
       let markers: Record<string, string> = {};
       await vi.waitUntil(
         async () => {
-          markers = (await get(instance, path)).markers;
+          const page = await get(instance, path);
+          markers = page.markers;
+          const rendered = markers[marker];
 
-          return markers[marker] !== before;
+          return page.status === 200 && rendered !== undefined && rendered !== before;
         },
         { timeout: MARKER_TIMEOUT, interval: 100 },
       );
