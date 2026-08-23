@@ -25,3 +25,12 @@ test("a reply that is not a flat field/value array is a failure, not an empty ha
   expect(() => hashFieldsOf({ value: "1" })).toThrow();
   expect(() => hashFieldsOf(["value"])).toThrow();
 });
+
+test("a field named __proto__ is a field like any other, not the prototype", () => {
+  const fields = hashFieldsOf(["__proto__", "1:2", "tags", "[]"]);
+
+  expect(Object.entries(fields)).toEqual([
+    ["__proto__", "1:2"],
+    ["tags", "[]"],
+  ]);
+});
