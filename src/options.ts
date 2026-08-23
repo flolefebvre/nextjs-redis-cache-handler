@@ -27,12 +27,13 @@ export interface RedisCacheHandlerOptions {
    * the hash tag in their name, and every Entry is routed by its own key, so no operation
    * is ever cross-slot.
    *
-   * The client must not be configured to read replicas — `replicaPoolSize` on a Sentinel,
-   * `useReplicas` on a Cluster. Every script this handler runs is sent as a write and
-   * lands on the master, but the one command it reads an Entry with is a read-only one,
-   * which such a client routes to a replica: replication is asynchronous, so a `get` that
-   * follows a `set` reads a node that does not hold the Entry yet, and the Instance
-   * renders again instead of serving what it just wrote.
+   * A client configured to read replicas — `replicaPoolSize` on a Sentinel, `useReplicas`
+   * on a Cluster — makes every Entry read lag replication: the one command an Entry is
+   * read with is a read-only one, which such a client routes to a replica, so a `get`
+   * right after a `set` misses and the scope is rendered again. It is never a hit on an
+   * Entry a mutation replaced: the Tag manifest is read through the script channel, which
+   * is always the master, and an Entry is judged by its own Write time against it. Leave
+   * replica reads off for the handler's client.
    *
    * One caveat on Sentinel. The handler reads the whole Tag manifest again when the
    * connection under it was rebuilt, because the server behind a rebuilt connection may be
