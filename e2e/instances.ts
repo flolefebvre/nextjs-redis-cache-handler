@@ -39,6 +39,15 @@ export function cookieHeader(page: Page): Record<string, string> {
   };
 }
 
+/** What a Scenario changes about its Instances, when the harness's defaults do not fit. */
+export interface InstancesOptions {
+  /**
+   * Extra environment for both Instances, on top of what the harness sets: the library's
+   * own `NEXT_REDIS_CACHE_*` variables, for a Scenario whose narrative is a configuration.
+   */
+  env?: Record<string, string>;
+}
+
 /** One Scenario's Instance pair, their Recorded calls, and the ways to drive them. */
 export interface Instances {
   /** The build id every cache key of this build starts with. */
@@ -84,15 +93,25 @@ export interface Instances {
  * Scenario files can never see each other's revalidations. An empty copy is a failure
  * here, where it names itself, rather than a puzzling miss inside a step.
  */
-export async function startInstances(scenario: string): Promise<Instances> {
+export async function startInstances(
+  scenario: string,
+  options: InstancesOptions = {},
+): Promise<Instances> {
   const build = inject("e2eBuild");
   const keyPrefix = `e2e-${scenario}-${suffix()}:`;
   await seedPrefix(build.redisUrl, build.buildPrefix, keyPrefix);
 
   const recordFile = recordFileOf(scenario);
   await writeFile(recordFile, "");
-  const a = await startInstance("A", scenario, build.redisUrl, keyPrefix, recordFile);
-  const running = { A: a, B: await second(a, scenario, build.redisUrl, keyPrefix, recordFile) };
+  const env: InstanceEnv = {
+    REDIS_URL: build.redisUrl,
+    NEXT_REDIS_CACHE_KEY_PREFIX: keyPrefix,
+    NEXT_CACHE_E2E_RECORD_FILE: recordFile,
+    NEXT_TELEMETRY_DISABLED: "1",
+    ...options.env,
+  };
+  const a = await startInstance("A", scenario, env);
+  const running = { A: a, B: await second(a, scenario, env) };
   const urlOf = (instance: InstanceName): string => running[instance].url;
 
   const get = async (
@@ -154,12 +173,10 @@ export async function startInstances(scenario: string): Promise<Instances> {
 async function second(
   first: RunningInstance,
   scenario: string,
-  redisUrl: string,
-  keyPrefix: string,
-  recordFile: string,
+  env: InstanceEnv,
 ): Promise<RunningInstance> {
   try {
-    return await startInstance("B", scenario, redisUrl, keyPrefix, recordFile);
+    return await startInstance("B", scenario, env);
   } catch (error) {
     await first.stop();
     throw error;
@@ -171,25 +188,19 @@ interface RunningInstance {
   stop(): Promise<void>;
 }
 
+/** The environment both Instances of a Scenario are started with, bar their own name. */
+type InstanceEnv = Record<string, string>;
+
 async function startInstance(
   name: InstanceName,
   scenario: string,
-  redisUrl: string,
-  keyPrefix: string,
-  recordFile: string,
+  env: InstanceEnv,
 ): Promise<RunningInstance> {
   const port = await freeHostPort();
   const url = `http://127.0.0.1:${String(port)}`;
   const child = spawn(NEXT_BIN, ["start", "-p", String(port)], {
     cwd: FIXTURE_DIR,
-    env: {
-      ...process.env,
-      REDIS_URL: redisUrl,
-      NEXT_REDIS_CACHE_KEY_PREFIX: keyPrefix,
-      NEXT_CACHE_E2E_RECORD_FILE: recordFile,
-      NEXT_CACHE_E2E_INSTANCE: name,
-      NEXT_TELEMETRY_DISABLED: "1",
-    },
+    env: { ...process.env, ...env, NEXT_CACHE_E2E_INSTANCE: name },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const log = createWriteStream(join(FIXTURE_DIR, ".e2e", `${scenario}-${name}.log`));
