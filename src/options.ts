@@ -15,14 +15,42 @@ export interface RedisCacheHandlerOptions {
    */
   url?: string;
   /**
-   * A standalone node-redis client the caller created and owns, whatever its RESP
-   * version, its TLS socket or its own tuning: the escape hatch for a connection this
-   * library's own options cannot express. It is used exactly as given — never connected,
-   * never quit, and `close()` leaves it open — so the caller connects it and tunes it
-   * themselves. Exclusive with `url`: exactly one of the two is required.
+   * A node-redis client the caller created and owns — standalone, Sentinel
+   * (`createSentinel`) or Cluster (`createCluster`) — whatever its RESP version, its TLS
+   * socket or its own tuning: the escape hatch for a connection this library's own
+   * options cannot express, and the way to point the handler at a Sentinel deployment or
+   * a Cluster. It is used exactly as given — never connected, never quit, and `close()`
+   * leaves it open — so the caller connects it and tunes it themselves. Exclusive with
+   * `url`: exactly one of the two is required.
    *
-   * A Cluster or Sentinel client is not accepted yet: node-redis gives those a different
-   * `sendCommand` signature, so they do not satisfy `CacheClient`.
+   * On Cluster, the Tag manifest, its log and the Handler clock share one slot through
+   * the hash tag in their name, and every Entry is routed by its own key, so no operation
+   * is ever cross-slot.
+   *
+   * A client configured to read replicas — `replicaPoolSize` on a Sentinel, `useReplicas`
+   * on a Cluster — makes every Entry read lag replication: the one command an Entry is
+   * read with is a read-only one, which such a client routes to a replica, so a `get`
+   * right after a `set` misses and the scope is rendered again. It is never a hit on an
+   * Entry a mutation replaced: the Tag manifest is read through the script channel, which
+   * is always the master, and an Entry is judged by its own Write time against it. Leave
+   * replica reads off for the handler's client.
+   *
+   * One caveat on Sentinel. The handler reads the whole Tag manifest again when the
+   * connection under it was rebuilt, because the server behind a rebuilt connection may be
+   * a different one — restarted empty, restored from an older dataset — whose event log no
+   * longer holds what the handler's watermark assumes. A standalone client names that
+   * moment `reconnecting` and a Cluster client names it `node-reconnecting`; a Sentinel
+   * client names it not at all, so it is counted on `topology-change` and `client-error`
+   * instead.
+   *
+   * A connection rebuilt to the same master is therefore not counted, and needs no full
+   * read: the incremental read resumes from the watermark, and an event written while the
+   * socket was down is above it and comes back with the next `refreshTags`. A failover is
+   * counted, through the `topology-change` the client emits for it. What is left uncounted
+   * is a master that comes back with a different dataset without a failover — restarted
+   * empty inside the Sentinel's `down-after-milliseconds`, say — where the handler keeps
+   * the manifest it already had: it then over-invalidates and never under-invalidates,
+   * since the Entries that manifest protects were on the dataset that was lost.
    */
   client?: CacheClient;
   /**

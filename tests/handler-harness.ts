@@ -191,15 +191,20 @@ export interface CommandStream {
 }
 
 /**
- * Watch what the server runs on one Key prefix, on a connection of its own. `MONITOR`
+ * Watch what one server runs on one Key prefix, on a connection of its own — the shared
+ * server of the run, or the one whose URL is given, which is how a test that owns a
+ * deployment watches a node of it. `MONITOR`
  * reports the commands a Lua script runs as well as the `EVALSHA` that started it, so a
  * read of the Tag manifest shows up as both. The stream is global, so only the commands
  * carrying this test's Key prefix are kept: a command with no key of ours in it, `TIME`
  * among them, cannot be told from another test's.
  */
-export async function commandStream(keyPrefix: string): Promise<CommandStream> {
+export async function commandStream(
+  keyPrefix: string,
+  url: string = inject("redisUrl"),
+): Promise<CommandStream> {
   const commands: string[][] = [];
-  const monitor = createClient({ url: inject("redisUrl") });
+  const monitor = createClient({ url });
   monitor.on("error", () => undefined);
   await monitor.connect();
   onTestFinished(() => monitor.close().catch(() => undefined));
@@ -207,7 +212,7 @@ export async function commandStream(keyPrefix: string): Promise<CommandStream> {
     const command = argumentsOf(String(line));
     if (command.some((argument) => argument.includes(keyPrefix))) commands.push(command);
   });
-  const marker = await serverClient();
+  const marker = await serverClient(url);
 
   return {
     async settled(): Promise<string[][]> {
