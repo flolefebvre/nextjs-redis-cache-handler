@@ -28,12 +28,9 @@ export interface RedisCacheHandlerOptions {
    * is ever cross-slot.
    *
    * A client configured to read replicas — `replicaPoolSize` on a Sentinel, `useReplicas`
-   * on a Cluster — makes every Entry read lag replication: the one command an Entry is
-   * read with is a read-only one, which such a client routes to a replica, so a `get`
-   * right after a `set` misses and the scope is rendered again. It is never a hit on an
-   * Entry a mutation replaced: the Tag manifest is read through the script channel, which
-   * is always the master, and an Entry is judged by its own Write time against it. Leave
-   * replica reads off for the handler's client.
+   * on a Cluster — is the caller's own traffic and changes nothing here: every operation of
+   * this handler, its reads included, is a Lua script sent with write intent, so all of them
+   * go to the master.
    *
    * One caveat on Sentinel. The handler reads the whole Tag manifest again when the
    * connection under it was rebuilt, because the server behind a rebuilt connection may be

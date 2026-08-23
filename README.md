@@ -298,12 +298,8 @@ await client.connect();
 export default createRedisCacheHandler({ client });
 ```
 
-Two caveats come with an injected client:
+One caveat comes with an injected client:
 
-- **Leave replica reads off** — `replicaPoolSize` on a Sentinel, `useReplicas` on a Cluster. An Entry is read
-  with a read-only command, which such a client routes to a replica, so a read lags replication: a `get` right
-  after a `set` misses and the scope is rendered again. It is never a hit on an Entry a mutation replaced — the
-  Tag manifest is always read from the master, and an Entry is judged by its Write time against it.
 - **On Sentinel, a rebuilt connection is counted through `topology-change`.** The handler reads the whole Tag
   manifest again when the connection under it was rebuilt, because the server behind it may be a different one. A
   standalone client names that moment `reconnecting` and a Cluster client `node-reconnecting`; a Sentinel client
