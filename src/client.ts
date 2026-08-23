@@ -4,7 +4,7 @@ import type { CacheErrorHook } from "./events.js";
 import type { CacheConnection } from "./options.js";
 
 const CONNECT_TIMEOUT = 2_000;
-const SOCKET_TIMEOUT = 30_000;
+const SOCKET_TIMEOUT = 15_000;
 const PING_INTERVAL = 10_000;
 const RECONNECT_CAP = 2_000;
 const RECONNECT_JITTER = 200;
@@ -25,6 +25,25 @@ export function reconnectDelay(retries: number): number {
   return Math.min(50 * 2 ** retries, RECONNECT_CAP) + Math.random() * RECONNECT_JITTER;
 }
 
+/**
+ * The client every owned handle is built on, tuned for a store that may go away.
+ *
+ * `socketTimeout` is what bounds a handshake nothing answers: node-redis arms it on the
+ * socket as soon as the TCP connect succeeds, so it covers the `HELLO` a proxy — or a
+ * port forwarder in front of a dead server — accepts and never replies to, which
+ * `connectTimeout` (the TCP connect alone) and the reconnect strategy both go through
+ * without noticing. Until the socket is torn down, every operation spends its whole
+ * deadline instead of failing at once, which is why 15 s is preferred to the 30 s a
+ * default client waits.
+ *
+ * It cannot go much lower: it is an idle timeout, so it also fires on a healthy
+ * connection nothing has sent anything on. `pingInterval` is what keeps such a connection
+ * busy, one `PING` every 10 s re-armed once the reply is in, and 15 s is that floor plus
+ * the round trip and the event-loop lag of a loaded host. Cutting the ping period to a
+ * couple of seconds instead, which is what bringing the bound down to the order of
+ * `connectTimeout` would take, would put a `PING` on that period on the store of every
+ * Instance for as long as it runs, to shorten one rare failure.
+ */
 function createTunedClient(url: string) {
   return createClient({
     url,
