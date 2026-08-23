@@ -69,7 +69,8 @@ export async function startInstances(scenario: string): Promise<Instances> {
     buildId: build.buildId,
     keyPrefix,
     calls: recordedCalls(recordFile),
-    get: async (instance, path, headers) => pageOf(await fetch(urlOf(instance) + path, { headers })),
+    get: async (instance, path, headers) =>
+      pageOf(await fetch(urlOf(instance) + path, { headers })),
     action: async (instance, exportedName) => {
       const response = await fetch(urlOf(instance) + "/", {
         method: "POST",
@@ -128,7 +129,8 @@ async function startInstance(
 async function waitUntilServing(url: string, child: ChildProcess): Promise<void> {
   await vi.waitUntil(
     async () => {
-      if (child.exitCode !== null) throw new Error(`the Instance exited with ${String(child.exitCode)}`);
+      if (child.exitCode !== null)
+        throw new Error(`the Instance exited with ${String(child.exitCode)}`);
 
       return fetch(`${url}/api/revalidate`).then(
         (response) => response.ok,

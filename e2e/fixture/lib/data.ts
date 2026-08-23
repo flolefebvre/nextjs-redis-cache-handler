@@ -71,7 +71,7 @@ export async function getRemoteNote(postId: number): Promise<string> {
 function rng(seed: number): () => number {
   let state = seed >>> 0;
 
-  return () => ((state = (state * 1664525 + 1013904223) >>> 0) / 2 ** 32);
+  return () => (state = (state * 1664525 + 1013904223) >>> 0) / 2 ** 32;
 }
 
 function words(count: number, seed: number): string {

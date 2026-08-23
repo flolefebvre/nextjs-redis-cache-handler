@@ -82,7 +82,7 @@ from a public path (see `docs/research/next-handler-types.md`).
 | `get(cacheKey, softTags)` | leader read of a `'use cache'` scope (after intra- and cross-request dedupe) | serialized key; the route's soft tags | `Promise<CacheEntry \| undefined>`; never throw |
 | `set(cacheKey, pendingEntry)` | after a miss or a background revalidation produced a value | key; `Promise<CacheEntry>` (already resolved in 16.3) | `Promise<void>`; catch own errors |
 | `refreshTags()` | lazily, at most once per handler slot per request, before the first leader `get` | none | `Promise<void>`; a rejection fails every cache read of that slot in the request |
-| `getExpiration(...tags)` | lazily, once per render per handler slot, awaited only when a `get` returned an entry | the route's soft tags | `Promise<number>`: `0`, a past ms timestamp, or `Infinity` |
+| `getExpiration(tags)` | lazily, once per render per handler slot, awaited only when a `get` returned an entry | the route's soft tags, as **one array** | `Promise<number>`: `0`, a past ms timestamp, or `Infinity` |
 | `updateTags(tags, durations?)` | after a Server Action / Route Handler body ran, or after a page render | encoded tag strings; `{ expire?: number }` or omitted | `Promise<void>` |
 
 `CacheEntry` = `{ value: ReadableStream<Uint8Array>, tags: string[], stale,
@@ -308,9 +308,12 @@ for every slot, on every render:
 
 - as the `softTags` argument of `get(key, softTags)` (unconditionally)
   **[source]** `use-cache-wrapper.js:1631`, `:2132`, `:2146`;
-- as the argument list of `getExpiration(...softTags)`, created lazily per
+- as the single array argument of `getExpiration(softTags)`, created lazily per
   render per slot and awaited only when a `get` returned an Entry
-  **[source]** `implicit-tags.js:46-57, 80-84`, `use-cache-wrapper.js:2150-2165`.
+  **[source]** `implicit-tags.js:46-57, 80-84` (`cacheHandler.getExpiration(tags)`
+  at `:52`), `use-cache-wrapper.js:2150-2165`; the vendored
+  `types.d.ts:63` says the same, and the Fixture's recording wrapper
+  **[measured]** receives one array.
 
 `getExpiration` return value **[source]** `use-cache-wrapper.js:2156-2163`,
 `:2543`: `0` → no Entry is discarded on soft-tag grounds; a timestamp `T` →
@@ -462,6 +465,20 @@ it in the root-params joiner path (`:405-411`, `:2063-2077`).
   dragging the Node.js target and its `redis` import into the client output.
 - `cacheMaxMemorySize` is not passed to custom handlers; it only sizes the
   built-in LRU and the `IncrementalCache` memory tier.
+- A pages-router module may not import `cacheTag` or `cacheLife`: the build
+  fails with "You're importing a module that depends on 'cacheLife'. This API
+  is only available in Server Components in the App Router" **[measured]** on
+  16.3.2 (Turbopack), through the import trace of the Edge SSR entry. The
+  Edge-bundle guard's page therefore imports a module of its own, with no
+  `next/cache` import in it.
+- A bare `'use cache'` scope reached from a pages-router render compiles, and
+  is **inert**: two requests to the page render two different outputs and
+  **no** `CacheHandler` method is called at all — not on the handler the Edge
+  bundle carries, not on any other **[measured]** on 16.3.2 (`next start`, the
+  e2e Fixture's `/edge`). Cache Components never reach the Pages Router, so an
+  Edge-bundled route is a build-time concern only: what has to hold is that the
+  bundle links the Edge target, which the e2e build-output test asserts on the
+  emitted chunks.
 
 ## Process lifecycle around the handler
 
@@ -529,7 +546,11 @@ Call order per request on a dynamic route:
 6. `next build` writes the static routes' Entries from one prerender worker,
    with the same build id `next start` later uses, and runtime reads them
    back; a build without Redis access just means the first runtime render
-   rewrites them.
+   rewrites them. Confirmed end to end **[measured]**: a cached data function
+   used by both a prerendered route and a dynamic one is written by the build
+   workers, and the **first** request of **every** Instance that reaches it
+   through the dynamic route is a `get` hit — the prewarm, which no Instance
+   has to earn for itself.
 7. `revalidatePath('/')` yields `['_N_T_/', '_N_T_/index']`;
    `revalidatePath('/', 'layout')` yields `['_N_T_/layout']` and expires every
    Entry on every instance.

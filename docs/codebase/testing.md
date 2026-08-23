@@ -1,6 +1,6 @@
 # Testing
 
-- The suite runs on Vitest 4, in two projects: `unit` (Docker-free, runs first) and `integration` (needs Docker).
+- The suite runs on Vitest 4, in three projects: `unit` (Docker-free, runs first), `integration` (needs Docker) and `e2e` (needs Docker, and the built output). Every script names its projects, so no run picks up a project by accident: `pnpm test` is `unit` and `integration`, `pnpm test:e2e` is `e2e` alone, last in the gate because it consumes what `build` produced.
 - Tests are collocated with the file they test, as `.test.ts` files (`foo.test.ts` next to `foo.ts`). An integration test is named `.integration.test.ts`, which is what puts it in the `integration` project.
 - Lay out each test body as Arrange / Act / Assert, one blank line between phases; two phases that fuse into one statement share a block, and a phase a test doesn't have is simply absent.
 - The container harness lives in `tests/` (`global-setup.ts`, `redis-container.ts`); test files never wire it themselves. The integration global setup starts one server for the run and hands its URL to every worker: read it with `inject("redisUrl")`.
@@ -12,3 +12,15 @@
 - A hook a cell expects an event to fire is awaited, never asserted at an instant: the hook fires when the event lands, which no instant of the app clock names. `vi.waitUntil` is how a cell waits for one.
 - A test asserts what a caller can observe — what `get` returns, what the server holds, which hooks fired, how long an operation took. No test inspects internal state, and none uses fake timers or a fake client.
 - Every test uses a fresh random key prefix and cleans nothing up.
+
+## The e2e project
+
+- One Scenario per file, `e2e/<scenario>.e2e.test.ts`, files sequential: a Scenario is one narrative, and its steps read the Instances' output in order.
+- The Fixture app under `e2e/fixture` is a workspace package that imports the library by package name, through the `exports` map, exactly as a consumer does. It is never imported from `src` or `dist`, and `next` is pinned there to the exact version the root devDependency names.
+- One `next build` per run, in `e2e/global-setup.ts`, with the store reachable: the build workers write their Entries under a build Key prefix, which is the prewarm every Scenario starts from.
+- A Scenario file starts with `startInstances("<scenario>")` and needs nothing else: it mints a fresh Key prefix, seeds it from the build prefix with `SCAN` + `COPY` (Redis 6.2 / Valkey 7.2, the supported floor) and asserts it copied something, then starts two Instances on random free ports. Two Scenario files therefore never see each other's Entries or revalidations.
+- The harness is the only thing in `e2e/` that talks to Redis. A Scenario asserts what a user can observe — status, HTML, the `data-rendered-at` marker of every cached scope — and what the Fixture recorded, never a key.
+- The Fixture's Handler slot module is a recording wrapper around the factory, configured with `optionsFromEnv` and writing one Recorded call per method invocation as a JSONL line. A step takes `calls.end()` before it drives anything and reads `calls.since(offset)` after, so it sees its own calls and no one else's; work Next.js does in the background is awaited with `calls.waitFor(offset, …)`, never slept on.
+- A step asserts the _set_ of `<method> <outcome>` pairs an Instance recorded, through `outcomesOf`, never their order: which cache scope is read first is Next.js's business.
+- The Fixture carries one pages-router page with `runtime: 'experimental-edge'`. It is the permanent build guard for the Edge-bundle regression, and `e2e/build-output.e2e.test.ts` keeps the guard from going vacuous: the Edge chunks must carry the disabled handler and none of the Node.js target.
+- Everything the run generates — `.next`, the record files, the Instance logs — lives under `e2e/fixture/` and is gitignored.

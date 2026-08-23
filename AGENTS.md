@@ -29,6 +29,11 @@ scripts/        Repo tooling, run with tsx
 tests/          Test harness wiring, and tests that exercise it
   dist-consumer/  A consumer compiled against the built output, for typecheck:dist, and the
                   .mjs/.cjs processes smoke:dist runs against it
+e2e/            The e2e harness, and one .e2e.test.ts per Scenario
+  fixture/        The Fixture app: a Next.js app consuming the built output by package name
+  fixture-build.ts  The one `next build` of a run, and the build Key prefix it writes under
+  instances.ts    startInstances(): a Scenario's fresh Instance pair, on a seeded prefix
+  records.ts      The Recorded calls, sliced by offset and awaited with waitFor
 docs/
   codebase/     Conventions, one file per area, linked from the AGENTS.md section it governs
   adr/          Architectural decisions
@@ -39,16 +44,17 @@ docs/
 ## Commands
 
 ```
-pnpm gate            Format check, lint, duplication, typecheck, test, build, pack:check, typecheck:dist, smoke:dist — the full check; needs Docker running
+pnpm gate            Format check, lint, duplication, typecheck, test, build, pack:check, typecheck:dist, smoke:dist, test:e2e — the full check; needs Docker running
 pnpm build           Clean and compile to dist/ with tsc
 pnpm format          Prettier, rewriting files in place
 pnpm format:check    Prettier in check mode (fails on unformatted files)
 pnpm lint            ESLint flat config (eslint.config.mjs), warnings are failures
 pnpm duplication     jscpd copy/paste detection (.jscpd.json); any clone is a failure
-pnpm typecheck       TypeScript with no emit, over src, tests and scripts
-pnpm test            Vitest, once, both projects; needs Docker running
+pnpm typecheck       TypeScript with no emit, over src, tests, scripts and the e2e harness
+pnpm test            Vitest, once, the unit and integration projects; needs Docker running
 pnpm test:unit       The unit project only (Docker-free)
 pnpm test:integration The integration project only; needs Docker running
+pnpm test:e2e        The e2e project; needs Docker running, and `pnpm build` first
 pnpm pack:check      Assert what `npm pack` would ship (build first)
 pnpm typecheck:dist  Compile a consumer against the built output through the exports map (build first)
 pnpm smoke:dist      Load the built ./handler from an ESM and a CommonJS process (build first)
