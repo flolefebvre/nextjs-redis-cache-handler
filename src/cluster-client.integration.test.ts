@@ -13,6 +13,7 @@ import {
   connected,
   KILL_CONNECTIONS,
   onEveryNode,
+  readsTheMaster,
   reportsNodeFailures,
   sharesTheStore,
   stopped,
@@ -29,19 +30,25 @@ const REBUILT_MS = 200;
 describe.skipIf(providedRedisUrl() !== undefined)("an injected Cluster client", () => {
   let deployment: RunningTopology;
   let client: TopologyClient;
+  let replicaReading: TopologyClient;
 
   beforeAll(async () => {
     deployment = await startClusterRedis(testImage());
-    client = await connected(
-      createCluster({ rootNodes: deployment.nodeUrls.map((url) => ({ url })) }),
-    );
+    const rootNodes = deployment.nodeUrls.map((url) => ({ url }));
+    client = await connected(createCluster({ rootNodes }));
+    replicaReading = await connected(createCluster({ rootNodes, useReplicas: true }));
   }, DEPLOYMENT_TIMEOUT);
 
-  afterAll(() => stopped(client, deployment));
+  afterAll(async () => {
+    await replicaReading.close().catch(() => undefined);
+    await stopped(client, deployment);
+  });
 
   sharesTheStore(() => ({ client, nodeUrls: deployment.nodeUrls }));
 
   reportsNodeFailures(() => ({ client, nodeUrls: deployment.nodeUrls }));
+
+  readsTheMaster(() => ({ client: replicaReading, nodeUrls: deployment.nodeUrls }));
 
   test(
     "a node connection rebuilt is counted, so the next refresh reads the whole manifest",
