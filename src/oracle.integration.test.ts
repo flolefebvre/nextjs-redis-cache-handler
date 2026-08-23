@@ -61,6 +61,11 @@ const MISS: ProjectedRead = { outcome: "miss" };
  * revalidated at, which discards every Entry older than it, or `Infinity`, which leaves
  * the Soft-tag check to `get`. The second declared divergence, and the only one that is
  * not a step of the Scenario: it is the answer a read is projected through, not a read.
+ *
+ * The instant is read against the clock the answer was stamped on — the Oracle's own,
+ * `performance.timeOrigin + performance.now()` — and never against `Date.now()`: the two
+ * drift apart by whatever the host's wall clock stepped by since the process started, and
+ * a correction wider than the tolerance would report a correct answer as a wrong instant.
  */
 type ProjectedExpiration = { kind: "at the tag event" | "infinite" | "at another instant" };
 
@@ -239,7 +244,7 @@ describe.each(SUBJECTS)("$name", (subject: ContractSubject) => {
 
   test("the instant the Soft tags expired at is answered with, or left to get", async () => {
     const handler = subject.create();
-    const anchor = Date.now();
+    const anchor = performance.timeOrigin + performance.now();
 
     await handler.updateTags(["expiration:path"]);
 
