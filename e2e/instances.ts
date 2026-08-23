@@ -92,7 +92,9 @@ export async function startInstances(scenario: string): Promise<Instances> {
 /**
  * The second Instance, started so that a failure to start it takes the first one down
  * with it: a Scenario whose `beforeAll` threw never gets to call `stop`, and a `next
- * start` nobody owns would hold its port for the rest of the run.
+ * start` nobody owns would hold its port and its Redis connection for the rest of the run.
+ * An Instance that never becomes ready stops itself, in `startInstance`, for the same
+ * reason.
  */
 async function second(
   first: RunningInstance,
@@ -139,7 +141,12 @@ async function startInstance(
   child.stdout.pipe(log);
   child.stderr.pipe(log);
 
-  await waitUntilServing(url, child);
+  try {
+    await waitUntilServing(url, child);
+  } catch (error) {
+    await stopInstance(child);
+    throw error;
+  }
 
   return { url, stop: () => stopInstance(child) };
 }
