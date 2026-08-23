@@ -6,7 +6,15 @@ import { createClient } from "redis";
 import { inject, vi } from "vitest";
 
 import { freeHostPort } from "../tests/redis-container.js";
-import { FIXTURE_DIR, recordFileOf, suffix } from "./fixture-build.js";
+import {
+  distDirOf,
+  fixtureEnv,
+  recordFileOf,
+  suffix,
+  FIXTURE_DIR,
+  type FixtureBuild,
+  type FixtureHandler,
+} from "./fixture-build.js";
 import { recordedCalls, type RecordedCalls } from "./records.js";
 
 const NEXT_BIN = join(FIXTURE_DIR, "node_modules", ".bin", "next");
@@ -42,6 +50,18 @@ export function cookieHeader(page: Page): Record<string, string> {
 /** What a Scenario changes about its Instances, when the harness's defaults do not fit. */
 export interface InstancesOptions {
   /**
+   * Which build of the run these Instances serve: the recording one by default, the one
+   * the library's Zero-config entry is registered in when a Scenario asks for it. A
+   * Zero-config build records nothing — no wrapper is in the path — so its `calls` are
+   * empty and a Scenario on it asserts on HTTP output and on what the Instances logged.
+   */
+  build?: FixtureHandler;
+  /**
+   * Whether the Instances are given the run's store. `none` starts them with no
+   * `REDIS_URL` at all, not even the one the developer's shell may carry.
+   */
+  store?: "shared" | "none";
+  /**
    * Extra environment for both Instances, on top of what the harness sets: the library's
    * own `NEXT_REDIS_CACHE_*` variables, for a Scenario whose narrative is a configuration.
    */
@@ -76,6 +96,13 @@ export interface Instances {
   ): Promise<Record<string, string>>;
   /** Run a Server Action on one Instance, by the name the Fixture exports it under. */
   action(instance: InstanceName, exportedName: string): Promise<number>;
+  /**
+   * The lines an Instance has logged that contain `text`, once at least one of them has.
+   * A process writes its log while it runs and no instant of a Scenario's clock names when
+   * a line lands, so a Scenario that expects one waits for it here rather than reading a
+   * file it opened by a path it guessed.
+   */
+  logged(instance: InstanceName, text: string): Promise<string[]>;
   /** Stop both Instances. */
   stop(): Promise<void>;
 }
@@ -97,17 +124,20 @@ export async function startInstances(
   scenario: string,
   options: InstancesOptions = {},
 ): Promise<Instances> {
-  const build = inject("e2eBuild");
+  const builds = inject("e2eBuilds");
+  const build = builds[options.build === "zero-config" ? "zeroConfig" : "recording"];
   const keyPrefix = `e2e-${scenario}-${suffix()}:`;
-  await seedPrefix(build.redisUrl, build.buildPrefix, keyPrefix);
+  if (build.buildPrefix !== undefined) {
+    await seedPrefix(builds.redisUrl, build.buildPrefix, keyPrefix);
+  }
 
   const recordFile = recordFileOf(scenario);
-  await writeFile(recordFile, "");
   const env: InstanceEnv = {
-    REDIS_URL: build.redisUrl,
     NEXT_REDIS_CACHE_KEY_PREFIX: keyPrefix,
-    NEXT_CACHE_E2E_RECORD_FILE: recordFile,
+    NEXT_CACHE_E2E_HANDLER: build.handler,
     NEXT_TELEMETRY_DISABLED: "1",
+    ...(options.store === "none" ? {} : { REDIS_URL: builds.redisUrl }),
+    ...(await recording(build, recordFile)),
     ...options.env,
   };
   const a = await startInstance("A", scenario, env);
@@ -143,11 +173,12 @@ export async function startInstances(
 
       return markers;
     },
+    logged: (instance, text) => loggedLines(logFile(scenario, instance), text),
     action: async (instance, exportedName) => {
       const response = await fetch(urlOf(instance) + "/", {
         method: "POST",
         headers: {
-          "Next-Action": await actionId(exportedName),
+          "Next-Action": await actionId(exportedName, distDirOf(build.handler)),
           "Content-Type": "text/plain;charset=UTF-8",
           Accept: "text/x-component",
         },
@@ -200,10 +231,10 @@ async function startInstance(
   const url = `http://127.0.0.1:${String(port)}`;
   const child = spawn(NEXT_BIN, ["start", "-p", String(port)], {
     cwd: FIXTURE_DIR,
-    env: { ...process.env, ...env, NEXT_CACHE_E2E_INSTANCE: name },
+    env: fixtureEnv({ ...env, NEXT_CACHE_E2E_INSTANCE: name }),
     stdio: ["ignore", "pipe", "pipe"],
   });
-  const log = createWriteStream(join(FIXTURE_DIR, ".e2e", `${scenario}-${name}.log`));
+  const log = createWriteStream(logFile(scenario, name));
   child.stdout.pipe(log);
   child.stderr.pipe(log);
 
@@ -215,6 +246,36 @@ async function startInstance(
   }
 
   return { url, stop: () => stopInstance(child) };
+}
+
+/**
+ * The record file variables an Instance of the recording build is started with, and the
+ * truncated file behind them. A Zero-config build has no wrapper in the path and records
+ * nothing, so it is given neither and no file nobody writes to is created.
+ */
+async function recording(build: FixtureBuild, recordFile: string): Promise<InstanceEnv> {
+  if (build.handler !== "recording") return {};
+  await writeFile(recordFile, "");
+
+  return { NEXT_CACHE_E2E_RECORD_FILE: recordFile };
+}
+
+function logFile(scenario: string, name: InstanceName): string {
+  return join(FIXTURE_DIR, ".e2e", `${scenario}-${name}.log`);
+}
+
+async function loggedLines(file: string, text: string): Promise<string[]> {
+  let lines: string[] = [];
+  await vi.waitUntil(
+    async () => {
+      lines = (await readFile(file, "utf-8")).split("\n").filter((line) => line.includes(text));
+
+      return lines.length > 0;
+    },
+    { timeout: MARKER_TIMEOUT, interval: 100 },
+  );
+
+  return lines;
 }
 
 async function waitUntilServing(url: string, child: ChildProcess): Promise<void> {
@@ -269,9 +330,14 @@ async function seedPrefix(redisUrl: string, from: string, to: string): Promise<v
   }
 }
 
-async function actionId(exportedName: string): Promise<string> {
+/**
+ * The id Next.js minted for a Server Action, read from the manifest of the build these
+ * Instances serve. Two builds mint two ids for one export, so the `distDir` a Scenario's
+ * build wrote to is the only place this may be read from.
+ */
+async function actionId(exportedName: string, distDir: string): Promise<string> {
   const manifest = JSON.parse(
-    await readFile(join(FIXTURE_DIR, ".next", "server", "server-reference-manifest.json"), "utf-8"),
+    await readFile(join(FIXTURE_DIR, distDir, "server", "server-reference-manifest.json"), "utf-8"),
   ) as { node: Record<string, { exportedName?: string }> };
   const found = Object.entries(manifest.node).find(
     ([, reference]) => reference.exportedName === exportedName,
