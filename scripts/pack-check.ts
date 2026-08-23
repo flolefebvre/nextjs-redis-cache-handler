@@ -26,6 +26,14 @@ const BUILTINS = new Set(builtinModules);
 const SPECIFIER = /(?:\bfrom|\bimport)\s*\(?\s*["']([^"']+)["']/g;
 const NEXT_IMPORT = /(?:\bfrom|\bimport|\brequire)\s*\(?\s*["'](next(?:\/[^"']*)?)["']/;
 
+/**
+ * What the `next` scan reads: the code the tarball ships, and only that. The README ships
+ * too, and its setup snippets are a consumer's `next.config.ts` — `import type
+ * { NextConfig } from "next"` among them — which is documentation of the peer dependency,
+ * not a runtime import by this package.
+ */
+const CODE = /\.(?:[cm]?[jt]s)$/;
+
 const fail = (message: string): never => {
   console.error(message);
   process.exit(1);
@@ -51,7 +59,8 @@ if (missing.length > 0) {
   fail(`Missing from the tarball: ${missing.join(", ")}`);
 }
 
-const importsNext = paths.filter((path) => NEXT_IMPORT.test(readFileSync(path, "utf-8")));
+const code = paths.filter((path) => CODE.test(path));
+const importsNext = code.filter((path) => NEXT_IMPORT.test(readFileSync(path, "utf-8")));
 if (importsNext.length > 0) {
   fail(`Shipped files import next: ${importsNext.join(", ")}`);
 }
@@ -106,6 +115,6 @@ for (const target of EDGE_TARGETS) {
 }
 
 console.log(
-  `Tarball OK: ${String(paths.length)} files, none importing next, ` +
+  `Tarball OK: ${String(paths.length)} files, ${String(code.length)} of them code and none importing next, ` +
     `${String(EDGE_TARGETS.length)} Edge targets free of redis and node:`,
 );
