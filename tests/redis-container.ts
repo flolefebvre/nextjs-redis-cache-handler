@@ -141,7 +141,12 @@ export async function startOutageRedis(image: string): Promise<OutageRedis> {
   };
 }
 
-async function freeHostPort(): Promise<number> {
+/**
+ * A host port nothing is listening on, taken by binding one and letting it go: what a
+ * server that has to answer at a fixed URL is started on, and what the e2e harness gives
+ * each Instance so two runs on one machine never collide.
+ */
+export async function freeHostPort(): Promise<number> {
   const server = createServer();
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();

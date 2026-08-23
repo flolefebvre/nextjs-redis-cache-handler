@@ -1,6 +1,7 @@
 packages:
   - "."
   - "tests/dist-consumer"
+  - "e2e/fixture"
 
 allowBuilds:
   cpu-features: false

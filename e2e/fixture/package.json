@@ -1,0 +1,28 @@
+{
+  "name": "e2e-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The Fixture app: a Next.js app whose routes and cached scopes exercise the built Cache Handler end to end.",
+  "imports": {
+    "#recording-handler-target": {
+      "edge-light": "./recording-handler.edge.mjs",
+      "default": "./recording-handler.node.mjs"
+    }
+  },
+  "scripts": {
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@flefebvre/nextjs-redis-cache-handler": "workspace:*",
+    "next": "16.3.2",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "typescript": "^5.9.3"
+  }
+}

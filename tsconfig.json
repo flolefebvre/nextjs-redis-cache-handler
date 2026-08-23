@@ -20,6 +20,6 @@
     "verbatimModuleSyntax": true,
     "noEmit": true
   },
-  "include": ["src", "tests", "scripts", "*.config.ts"],
-  "exclude": ["dist", "node_modules", "tests/dist-consumer"]
+  "include": ["src", "tests", "scripts", "e2e/**/*.ts", "*.config.ts"],
+  "exclude": ["dist", "node_modules", "tests/dist-consumer", "e2e/fixture"]
 }

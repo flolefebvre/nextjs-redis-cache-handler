@@ -68,3 +68,36 @@ jobs:
 
       - name: Smoke the built output
         run: pnpm smoke:dist
+
+  # The e2e project, in a job of its own: it needs the built output the Fixture app
+  # imports by package name, so it builds first, and its budget is minutes rather than
+  # the gate's. Same list as the `gate` line's last step.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The Fixture app consumes the built output through the `exports` map.
+      - name: Build
+        run: pnpm build
+
+      # Needs the runner's Docker daemon: the e2e project starts its own throwaway Valkey.
+      - name: E2e
+        run: pnpm test:e2e
