@@ -13,6 +13,65 @@ import {
  */
 export const DEFAULT_TEST_IMAGE = "valkey/valkey:8";
 
+/** The lowest Redis a supported deployment may run on, and what the matrix's `redis:6.2` cell proves. */
+export const REDIS_VERSION_FLOOR = "6.2";
+
+/** The lowest Valkey a supported deployment may run on, and what the matrix's `valkey/valkey:7.2` cell proves. */
+export const VALKEY_VERSION_FLOOR = "7.2";
+
+/** The two server families the handler supports, each with a floor of its own. */
+export type ServerFamily = "redis" | "valkey";
+
+/** What a server says it is: its family, the version that family reports, and the floor it owes. */
+export interface ServerVersion {
+  family: ServerFamily;
+  version: string;
+  floor: string;
+}
+
+/**
+ * Read a server's family and version out of an `INFO server` reply.
+ *
+ * A Valkey server is recognised by `valkey_version`, and only that field carries its real
+ * version: its `redis_version` is a frozen compatibility string — `7.2.4` on Valkey 7.2 and
+ * on Valkey 9 alike — so `redis_version` decides nothing here and must decide nothing
+ * anywhere else in the harness. It is read for a server that reports no `valkey_version` at
+ * all, which is the Redis family.
+ */
+export function serverVersion(info: string): ServerVersion {
+  const valkey = versionField(info, "valkey_version");
+  if (valkey !== undefined) {
+    return { family: "valkey", version: valkey, floor: VALKEY_VERSION_FLOOR };
+  }
+
+  const redis = versionField(info, "redis_version");
+  if (redis === undefined) {
+    throw new Error("The INFO server reply carries neither a valkey_version nor a redis_version");
+  }
+
+  return { family: "redis", version: redis, floor: REDIS_VERSION_FLOOR };
+}
+
+function versionField(info: string, field: string): string | undefined {
+  return new RegExp(`^${field}:(.+)$`, "m").exec(info)?.[1]?.trim();
+}
+
+/**
+ * Whether a version is at or above a floor, compared component by component and numerically:
+ * a lexical comparison would put `10.0.0` below `7.2` and let a mis-tagged image pass.
+ */
+export function meetsFloor(version: string, floor: string): boolean {
+  const components = (value: string): number[] => value.split(".").map(Number);
+  const actual = components(version);
+
+  for (const [index, required] of components(floor).entries()) {
+    const component = actual[index] ?? 0;
+    if (component !== required) return component > required;
+  }
+
+  return true;
+}
+
 const REDIS_PORT = 6379;
 
 type RunningContainer = ReturnType<ContainerRuntimeClient["container"]["getById"]>;
