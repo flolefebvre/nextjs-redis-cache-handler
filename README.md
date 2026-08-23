@@ -101,8 +101,9 @@ prerender produced, so the first runtime render on each Instance is a hit.
 
 **Edge routes still build.** An app with an Edge-bundled route (Pages Router `experimental-edge`) compiles on
 webpack and on Turbopack alike: both entry points resolve to an Edge target that imports no Redis client and no
-`node:` module. The `'use cache'` scopes of such a route render uncached and say so once; the Node.js side of the
-app is unaffected.
+`node:` module — one that caches nothing and reports it once, the first time it is called. Cache Components never
+reach the Pages Router, so a `'use cache'` scope of such a route is inert in any case: it re-renders on every
+request and no Cache Handler method is called at all. The Node.js side of the app is unaffected either way.
 
 `@flefebvre/nextjs-redis-cache-handler/handler-target` also appears in the package's `exports`. It is internal —
 the self-reference the Zero-config entry uses to reach the target its runtime can run — and nothing should ever
@@ -113,8 +114,8 @@ register it.
 Register your own module instead when you need something no environment variable covers: a client of your own,
 an `onEvent` or an `onError` hook.
 
-```ts
-// cache-handler.ts
+```js
+// cache-handler.mjs
 import { createRedisCacheHandler } from "@flefebvre/nextjs-redis-cache-handler";
 
 export default createRedisCacheHandler({
@@ -125,13 +126,22 @@ export default createRedisCacheHandler({
 });
 ```
 
-`cacheHandlers` still takes a path, so hand it the path of that module — `require.resolve('./cache-handler.js')`
-from a CommonJS config, `fileURLToPath(import.meta.resolve('./cache-handler.js'))` from an ESM one.
+Next.js loads that module with a native `import()` from the path you register, and the path has to exist when the
+config is loaded — so write it as plain JavaScript that default-exports the handler object, or build it to
+JavaScript first and register the built file. Register it the same way as the Zero-config entry, by path:
+
+```js
+cacheHandlers: {
+  default: require.resolve("./cache-handler.mjs"),
+},
+```
+
+from a CommonJS config, and `fileURLToPath(import.meta.resolve("./cache-handler.mjs"))` from an ESM one.
 
 To keep the environment's configuration and add hooks, spread `optionsFromEnv`, which reads the same variables
 the Zero-config entry does:
 
-```ts
+```js
 import { createRedisCacheHandler, optionsFromEnv } from "@flefebvre/nextjs-redis-cache-handler";
 
 export default createRedisCacheHandler({ ...optionsFromEnv(process.env), onEvent });
@@ -260,7 +270,9 @@ hand it to the factory as `client`. The Tag manifest, its log and the Handler cl
 through the hash tag in their names, and every Entry is routed by its own key, so no operation is ever
 cross-slot.
 
-```ts
+```js
+// cache-handler.mjs
+import { createRedisCacheHandler } from "@flefebvre/nextjs-redis-cache-handler";
 import { createSentinel } from "redis";
 
 const client = createSentinel({
@@ -273,7 +285,9 @@ await client.connect();
 export default createRedisCacheHandler({ client });
 ```
 
-```ts
+```js
+// cache-handler.mjs
+import { createRedisCacheHandler } from "@flefebvre/nextjs-redis-cache-handler";
 import { createCluster } from "redis";
 
 const client = createCluster({
