@@ -8,6 +8,7 @@ import {
   instancePair,
   opsOf,
   recording,
+  seedHandlerClock,
   seedTagEvents,
   serverClient,
   type ServerClient,
@@ -43,6 +44,13 @@ const SLOW_TIMEOUT_MS = 60_000;
  * seeded tag instead.
  */
 const WATERMARK_FIELDS = 10;
+
+/**
+ * How far ahead of the server's wall clock a cell holds the Handler clock: more than any
+ * backward step the host is known to take, the ten seconds `STEP_MS` stands for in
+ * `handler-clock.integration.test.ts`.
+ */
+const HOLD_MS = 10_000;
 
 const SEED = `
 local clock = redis.call('TIME')
@@ -213,6 +221,7 @@ test(
     const keyPrefix = freshPrefix();
     const server = await serverClient();
     await seedManifest(server, keyPrefix, SEEDED_TAGS);
+    await holdHandlerClockAhead(keyPrefix);
     const { errors, hooks } = recording();
     const handler = handlerFor(keyPrefix, hooks);
     await handler.updateTags(["warm-up"]);
@@ -230,6 +239,22 @@ test(
     expect(watermarkMs).toBeLessThan(DEFAULT_OPERATION_TIMEOUT);
   },
 );
+
+/**
+ * Persist a Handler clock floor above the server's wall clock, so that every read of this
+ * Key prefix comes back at that floor: a value no backward step of the host's wall clock
+ * can bring a later read below, which keeps the watermark comparison of two reads with no
+ * stamp between them monotone for the whole cell (ADR 0003).
+ *
+ * It goes before the first stamp of the cell, never after: a stamp issued under the floor
+ * lands on it, so the events a cell writes stay inside the margin the next read reaches
+ * back over, while a floor raised after them would leave them below it.
+ */
+async function holdHandlerClockAhead(keyPrefix: string): Promise<void> {
+  const server = await serverClient();
+
+  await seedHandlerClock(server, keyPrefix, (await serverNow(server)) + HOLD_MS);
+}
 
 async function seedManifest(server: ServerClient, keyPrefix: string, tags: number): Promise<void> {
   for (let first = 0; first < tags; first += SEED_BATCH) {
