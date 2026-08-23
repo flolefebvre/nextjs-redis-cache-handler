@@ -1,6 +1,11 @@
 {
   "path": ["src", "scripts", "tests", "e2e"],
-  "ignore": ["**/node_modules/**", "dist/**", "e2e/fixture/.next/**"],
+  "ignore": [
+    "**/node_modules/**",
+    "dist/**",
+    "e2e/fixture/.next/**",
+    "e2e/fixture/.next-zero-config/**"
+  ],
   "format": ["typescript"],
   "minTokens": 50,
   "exitCode": 1,
