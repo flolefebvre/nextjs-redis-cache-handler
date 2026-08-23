@@ -8,8 +8,9 @@ import {
   type InstanceName,
   type OwnStoreInstances,
 } from "./instances.js";
-import { POST, postMarkers, postMarkersOnceChanged } from "./pages.js";
+import { POST } from "./pages.js";
 import { outcomesOf, type RecordedCall } from "./records.js";
+import { expectOneEntryServedByBoth, expectUpdateTagReachesB } from "./steps.js";
 
 /** The deadline both Instances of this Scenario run every awaited operation under. */
 const OPERATION_TIMEOUT = 1_000;
@@ -97,14 +98,7 @@ describe.skipIf(!canPauseStore())("through an outage of its own store", () => {
   }
 
   test("both Instances warm one Entry on the store they alone share", async () => {
-    const from = await instances.calls.end();
-
-    const a = await postMarkers(instances, "A");
-    await instances.calls.waitFor(from, (call) => call.method === "set");
-    const b = await postMarkers(instances, "B");
-
-    expect(b).toEqual(a);
-    expect(outcomesOf(await instances.calls.since(from), "B")).toContain("get hit");
+    await expectOneEntryServedByBoth(instances);
   });
 
   test("while the store is stalled, both Instances still serve the page, and miss", async () => {
@@ -147,14 +141,7 @@ describe.skipIf(!canPauseStore())("through an outage of its own store", () => {
   });
 
   test("propagation resumes: `updateTag` on A expires the Entry B reads next", async () => {
-    const before = await postMarkers(instances, "B");
-    const from = await instances.calls.end();
-
-    expect(await instances.action("A", "invalidatePosts")).toBe(200);
-    const after = await postMarkersOnceChanged(instances, "B", "post-body", before["post-body"]);
-
-    expect(after["comments"]).toBe(before["comments"]);
-    expect(outcomesOf(await instances.calls.since(from), "B")).toContain("get miss:expired");
+    await expectUpdateTagReachesB(instances);
   });
 
   test("each Instance reported the outage, and neither left a rejection unhandled", async () => {

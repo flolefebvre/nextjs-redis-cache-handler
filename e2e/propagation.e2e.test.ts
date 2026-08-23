@@ -3,6 +3,7 @@ import { afterAll, beforeAll, expect, test } from "vitest";
 import { startInstances, type Instances } from "./instances.js";
 import { POST, postMarkers, postMarkersOnceChanged, PPR } from "./pages.js";
 import { outcomesOf } from "./records.js";
+import { expectOneEntryServedByBoth, expectUpdateTagReachesB } from "./steps.js";
 
 let instances!: Instances;
 
@@ -32,25 +33,11 @@ test("the first request reads what `next build` prewarmed, and fills what it cou
 });
 
 test("an Entry one Instance wrote is served by the other", async () => {
-  const from = await instances.calls.end();
-
-  const a = await postMarkers(instances, "A");
-  await instances.calls.waitFor(from, (call) => call.method === "set");
-  const b = await postMarkers(instances, "B");
-
-  expect(b).toEqual(a);
-  expect(outcomesOf(await instances.calls.since(from), "B")).toContain("get hit");
+  await expectOneEntryServedByBoth(instances);
 });
 
 test("`updateTag` on A expires the Entry B reads next", async () => {
-  const before = await postMarkers(instances, "B");
-  const from = await instances.calls.end();
-
-  expect(await instances.action("A", "invalidatePosts")).toBe(200);
-  const after = await postMarkersOnceChanged(instances, "B", "post-body", before["post-body"]);
-
-  expect(after["comments"]).toBe(before["comments"]);
-  expect(outcomesOf(await instances.calls.since(from), "B")).toContain("get miss:expired");
+  await expectUpdateTagReachesB(instances);
 });
 
 test("`revalidateTag(tag, 'max')` on A has B serve the old Entry once, then a new one", async () => {
