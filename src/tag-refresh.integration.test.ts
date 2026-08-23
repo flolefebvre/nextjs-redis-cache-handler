@@ -122,6 +122,7 @@ test("a tag event too old to affect any living Entry stops hiding one", async ()
   const past = (await serverNow(server)) - EVENT_AGE_MS;
 
   await seedTagEvents(server, keyPrefix, ["posts"], past, past);
+  await holdHandlerClockAhead(keyPrefix);
   await reader.refreshTags();
 
   expect(await reader.get("posts", [])).toBeUndefined();
@@ -238,10 +239,12 @@ test(
  * can bring a later read below, which keeps the watermark comparison of two reads with no
  * stamp between them monotone for the whole cell (ADR 0003).
  *
- * It goes before the tag events the cell writes, never after them: a stamp issued under
+ * It goes before the tag events the cell stamps, never after them: a stamp issued under
  * the floor lands on it, so those events stay inside the margin the next read reaches back
  * over, while a floor raised after them would leave them a hold below it, outside the
- * range that read asks for.
+ * range that read asks for. An event a cell seeds at a score of its own is not a stamp and
+ * is unaffected either way — but the floor still goes after the Entries the cell writes,
+ * whose Write time it would otherwise raise above such an event.
  *
  * A stamp issued under the held clock persists nothing — the floor is already there — so
  * no `SET` of the clock key appears in a stream recorded under it.
