@@ -59,10 +59,8 @@ export async function startInstances(scenario: string): Promise<Instances> {
 
   const recordFile = recordFileOf(scenario);
   await writeFile(recordFile, "");
-  const running = {
-    A: await startInstance("A", scenario, build.redisUrl, keyPrefix, recordFile),
-    B: await startInstance("B", scenario, build.redisUrl, keyPrefix, recordFile),
-  };
+  const a = await startInstance("A", scenario, build.redisUrl, keyPrefix, recordFile);
+  const running = { A: a, B: await second(a, scenario, build.redisUrl, keyPrefix, recordFile) };
   const urlOf = (instance: InstanceName): string => running[instance].url;
 
   return {
@@ -89,6 +87,26 @@ export async function startInstances(scenario: string): Promise<Instances> {
       await Promise.all([running.A.stop(), running.B.stop()]);
     },
   };
+}
+
+/**
+ * The second Instance, started so that a failure to start it takes the first one down
+ * with it: a Scenario whose `beforeAll` threw never gets to call `stop`, and a `next
+ * start` nobody owns would hold its port for the rest of the run.
+ */
+async function second(
+  first: RunningInstance,
+  scenario: string,
+  redisUrl: string,
+  keyPrefix: string,
+  recordFile: string,
+): Promise<RunningInstance> {
+  try {
+    return await startInstance("B", scenario, redisUrl, keyPrefix, recordFile);
+  } catch (error) {
+    await first.stop();
+    throw error;
+  }
 }
 
 interface RunningInstance {

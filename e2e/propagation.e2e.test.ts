@@ -6,14 +6,14 @@ import { outcomesOf } from "./records.js";
 const POST = "/posts/1";
 const POST_MARKERS = ["comments", "post-body", "remote-note"];
 
-let instances: Instances;
+let instances!: Instances;
 
 beforeAll(async () => {
   instances = await startInstances("propagation");
 });
 
 afterAll(async () => {
-  await instances.stop();
+  await instances?.stop();
 });
 
 test("the first request on each Instance reads what `next build` prewarmed", async () => {
