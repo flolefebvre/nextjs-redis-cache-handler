@@ -67,7 +67,10 @@ credential:
 2. In `.github/workflows/release.yml`, delete the `guard` job's
    `npm credentials are configured` step, its `env: NPM_TOKEN` block, and the `publish`
    job's `env: NODE_AUTH_TOKEN` block.
-3. Delete the `NPM_TOKEN` repository secret.
+3. In the same edit, move the `publish` job's `node-version` to `24`. Trusted publishing
+   needs an npm recent enough to exchange the OIDC token for a registry credential, and
+   Node 22 does not ship one — npm's own trusted-publisher example pins Node 24.
+4. Delete the `NPM_TOKEN` repository secret.
 
 Provenance is unaffected: it comes from the `id-token: write` OIDC token, not from how
 npm authenticated the publish.

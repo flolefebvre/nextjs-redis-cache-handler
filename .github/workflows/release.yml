@@ -8,8 +8,14 @@ on:
 
 # A half-finished publish is the one state worth avoiding, so overlapping releases queue
 # rather than cancel each other.
+#
+# A constant group, deliberately: the called `ci.yml` computes its own group from
+# `${{ github.workflow }}-${{ github.ref }}`, and inside a reusable call `github.workflow`
+# is the *caller's* name. A group of `release-${{ github.ref }}` would therefore match
+# `Release-refs/tags/v0.1.0` — group names are case-insensitive — and `ci.yml` cancels in
+# progress on any ref but main, so starting the `ci` stage would cancel this very run.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 # Least privilege by default: the `publish` job widens this for itself.
@@ -120,8 +126,10 @@ jobs:
       # yet exist on npm and so has no settings page on which to configure a trusted
       # publisher. Once 0.1.0 is live: add this repo + `release.yml` as the package's
       # trusted publisher on npmjs.com, then delete the job's `env:` block, the guard
-      # job's credential check, and the NPM_TOKEN secret. Provenance is unaffected either
-      # way — it comes from the OIDC token, not from how npm authenticated the publish.
+      # job's credential check, and the NPM_TOKEN secret — and move `node-version` above
+      # to 24, because trusted publishing needs an npm new enough to exchange the OIDC
+      # token and Node 22 does not ship one. Provenance is unaffected either way — it
+      # comes from the OIDC token, not from how npm authenticated the publish.
       - name: Publish to npm
         run: npm publish --provenance --access public
 
