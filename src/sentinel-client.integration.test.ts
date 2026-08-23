@@ -15,6 +15,7 @@ import {
   KILL_CONNECTIONS,
   failedOver,
   onEveryNode,
+  reportsNodeFailures,
   SentinelTiltError,
   sharesTheStore,
   stopped,
@@ -34,6 +35,7 @@ const REBUILT_MS = 500;
 describe.skipIf(providedRedisUrl() !== undefined)("an injected Sentinel client", () => {
   let deployment: RunningSentinel;
   let client: TopologyClient;
+  let passthrough: TopologyClient;
 
   beforeAll(async () => {
     deployment = await startSentinelRedis(testImage());
@@ -44,11 +46,23 @@ describe.skipIf(providedRedisUrl() !== undefined)("an injected Sentinel client",
         sentinelRootNodes: [{ host: hostname, port: Number(port) }],
       }),
     );
+    passthrough = await connected(
+      createSentinel({
+        name: SENTINEL_MASTER_NAME,
+        sentinelRootNodes: [{ host: hostname, port: Number(port) }],
+        passthroughClientErrorEvents: true,
+      }),
+    );
   }, DEPLOYMENT_TIMEOUT);
 
-  afterAll(() => stopped(client, deployment));
+  afterAll(async () => {
+    await passthrough.close().catch(() => undefined);
+    await stopped(client, deployment);
+  });
 
   sharesTheStore(() => ({ client, nodeUrls: deployment.nodeUrls }));
+
+  reportsNodeFailures(() => ({ client: passthrough, nodeUrls: deployment.nodeUrls }));
 
   test(
     "a connection rebuilt to the same master loses nothing, and is not counted",

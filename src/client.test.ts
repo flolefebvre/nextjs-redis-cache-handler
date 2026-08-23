@@ -2,6 +2,7 @@ import { createClient, createCluster, createSentinel, defineScript } from "redis
 import { expect, test } from "vitest";
 
 import { clientKind, reconnectDelay, type CacheClient } from "./client.js";
+import type { CacheErrorOp } from "./events.js";
 import { createRedisCacheHandler } from "./redis-cache-handler.js";
 
 /** A server nothing dials: every client here is built, never connected. */
@@ -59,40 +60,94 @@ test("a Sentinel client is one, and is told apart from a Cluster client", () => 
 });
 
 /**
- * An injected client as the cell below holds one: what the handler is given, and the count
- * of listeners the cell reads back off it.
+ * An injected client as the cells below hold one: what the handler is given, what a cell
+ * emits on it, and the count of listeners it reads back off it.
  *
  * Every factory of the table states it as its return type, so that each concrete node-redis
  * client is checked against `CacheClient` where it is built, on its own. Left to infer, the
  * three would meet in one position and be weighed against each other instead — see the rule
  * in `docs/codebase/testing.md`.
  */
-type InjectedClient = CacheClient & { listenerCount(event: string): number };
+type InjectedClient = CacheClient & {
+  emit(event: string, ...payload: unknown[]): boolean;
+  listenerCount(event: string): number;
+};
 
-test.each([
-  ["standalone", (): InjectedClient => createClient({ url: URL }), "reconnecting"],
-  [
-    "sentinel",
-    (): InjectedClient => createSentinel({ name: "mymaster", sentinelRootNodes: [SENTINEL_NODE] }),
-    "client-error",
-  ],
-  [
-    "cluster",
-    (): InjectedClient => createCluster({ rootNodes: [{ url: URL }] }),
-    "node-reconnecting",
-  ],
-] as const)(
-  "an injected %s client is listened to on the event its kind names, and is left as it was found",
-  async (_kind, build, rebuilt) => {
+/** The failure of a node, as the payload of every kind's node-level event carries it. */
+const NODE_FAILURE = new Error("boom");
+
+/** The node those payloads name, as the kinds that name one spell it. */
+const NODE = { host: "127.0.0.1", port: 6379 };
+
+/**
+ * One kind, as both cells below drive it: how a client of it is built, the event a rebuilt
+ * connection is counted on, the node-level failure event it lets out with the payload
+ * node-redis emits on it, and the message that failure reaches `onError` as.
+ */
+const KINDS = [
+  {
+    kind: "standalone",
+    build: (): InjectedClient => createClient({ url: URL }),
+    rebuilt: "reconnecting",
+    failed: "error",
+    payload: [NODE_FAILURE],
+    reported: "boom",
+  },
+  {
+    kind: "sentinel",
+    build: (): InjectedClient =>
+      createSentinel({ name: "mymaster", sentinelRootNodes: [SENTINEL_NODE] }),
+    rebuilt: "topology-change",
+    failed: "error",
+    payload: [NODE_FAILURE],
+    reported: "boom",
+  },
+  {
+    kind: "cluster",
+    build: (): InjectedClient => createCluster({ rootNodes: [{ url: URL }] }),
+    rebuilt: "node-reconnecting",
+    failed: "node-error",
+    payload: [NODE_FAILURE, NODE],
+    reported: "Cluster node (127.0.0.1:6379): boom",
+  },
+] as const;
+
+test.each(KINDS)(
+  "the node failure an injected $kind client lets out is reported once, as an Error naming the node",
+  async ({ build, failed, payload, reported }) => {
     const injected = build();
-    const events = ["error", rebuilt];
-    const before = events.map((event) => injected.listenerCount(event));
+    const reports: [unknown, CacheErrorOp][] = [];
+    const handler = createRedisCacheHandler({
+      client: injected,
+      keyPrefix: "cache-test:",
+      onError: (error, op) => reports.push([error, op]),
+    });
+
+    injected.emit(failed, ...payload);
+    await handler.close();
+
+    expect(reports).toHaveLength(1);
+    const [error, op] = reports[0] ?? [];
+    expect(op).toBe("connect");
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(reported);
+    expect((error as Error).cause ?? error).toBe(NODE_FAILURE);
+  },
+);
+
+test.each(KINDS)(
+  "an injected $kind client is listened to on the events its kind names, and is left as it was found",
+  async ({ build, rebuilt, failed }) => {
+    const injected = build();
+    const events = [...new Set(["error", rebuilt, failed])];
+    const counted = (): number[] => events.map((event) => injected.listenerCount(event));
+    const before = counted();
 
     const handler = createRedisCacheHandler({ client: injected, keyPrefix: "cache-test:" });
-    const attached = events.map((event) => injected.listenerCount(event));
+    const attached = counted();
     await handler.close();
 
     expect(attached).toEqual(before.map((count) => count + 1));
-    expect(events.map((event) => injected.listenerCount(event))).toEqual(before);
+    expect(counted()).toEqual(before);
   },
 );

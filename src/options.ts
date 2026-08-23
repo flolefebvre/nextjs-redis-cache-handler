@@ -40,8 +40,7 @@ export interface RedisCacheHandlerOptions {
    * a different one — restarted empty, restored from an older dataset — whose event log no
    * longer holds what the handler's watermark assumes. A standalone client names that
    * moment `reconnecting` and a Cluster client names it `node-reconnecting`; a Sentinel
-   * client names it not at all, so it is counted on `topology-change` and `client-error`
-   * instead.
+   * client names it not at all, so it is counted on `topology-change` instead.
    *
    * A connection rebuilt to the same master is therefore not counted, and needs no full
    * read: the incremental read resumes from the watermark, and an event written while the
@@ -90,6 +89,14 @@ export interface RedisCacheHandlerOptions {
   /**
    * Called once per failure, with the operation it happened in. A failing `updateTags`
    * calls it once, on the failure its retries ended with, never once per attempt.
+   * `connect` is every failure outside an operation, on the three kinds of client: the
+   * `error` of a standalone client, and the `node-error` a Cluster client emits for the node
+   * whose socket failed, reported as an `Error` naming that node. A Sentinel client lets a
+   * node failure out on none of the events node-redis's `RedisSentinel` forwards, so it is
+   * heard only when the client was built with `passthroughClientErrorEvents: true`, which
+   * re-emits it as the client's own `error`, named `Master Client (host:port): …` by
+   * node-redis: without that option an operator on Sentinel sees a node's outage through
+   * the operation failures alone.
    * Defaults to `console.error` when neither this hook nor `debug` is given. Exceptions
    * are caught and ignored.
    */
