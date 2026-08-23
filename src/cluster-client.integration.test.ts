@@ -30,9 +30,9 @@ describe.skipIf(providedRedisUrl() !== undefined)("an injected Cluster client", 
 
   beforeAll(async () => {
     deployment = await startClusterRedis(testImage());
-    client = createCluster({ rootNodes: deployment.nodeUrls.map((url) => ({ url })) });
-    client.on("error", () => undefined);
-    await client.connect();
+    client = await connected(
+      createCluster({ rootNodes: deployment.nodeUrls.map((url) => ({ url })) }),
+    );
   }, DEPLOYMENT_TIMEOUT);
 
   afterAll(() => stopped(client, deployment));
