@@ -587,6 +587,9 @@ export function sharesTheStore(topology: () => Topology): void {
 /** The Entry this cell writes and reads back, and the key its node is asked for. */
 const JUST_WRITTEN = "just-written";
 
+/** How many times it reads that Entry: one chance in 256 of missing a replica read. */
+const ENTRY_READS = 8;
+
 /**
  * What a client the caller configured to read replicas owes the handler: nothing changes.
  * A replica-reading client — `replicaPoolSize` on a Sentinel, `useReplicas` on a Cluster —
@@ -598,6 +601,16 @@ const JUST_WRITTEN = "just-written";
  * handed the write within the microsecond, so a read routed to one comes back with the
  * Entry anyway and hides the routing. The `get` is asserted beside it as what a caller
  * sees of the same thing — a hit with no wait at all between the write and the read.
+ *
+ * It reads the Entry several times because one read decides nothing. A client that reads
+ * replicas spreads a slot's reads over the master and its replicas, and node-redis picks
+ * the first of them at random and then alternates: a single read of a handler that had
+ * stopped routing its reads to the master would land on the master anyway on half the runs,
+ * and a cell built on one would be a coin toss. `ENTRY_READS` reads leave that alternation
+ * nowhere to hide. The count is not tuned to it, though — how a client spreads reads is its
+ * own business and can change under this cell — so it is set where a client picking a node
+ * at random per command, the worst spread this property survives, would still have to miss
+ * the replica every time for the cell to go green. Every read is asserted a hit.
  */
 export function readsTheMaster(topology: () => Topology): void {
   test("the Entry read runs on the master, whatever the client's replica reads", async () => {
@@ -609,9 +622,12 @@ export function readsTheMaster(topology: () => Topology): void {
     const settled = await entryReadsOn(keyPrefix, nodeUrls);
 
     await instance.set(JUST_WRITTEN, Promise.resolve(entryOf()));
-    const entry = await instance.get(JUST_WRITTEN, []);
+    const entries = [];
+    for (let read = 0; read < ENTRY_READS; read++)
+      entries.push(await instance.get(JUST_WRITTEN, []));
 
     expect(await settled()).toEqual([master]);
-    expect(await bytesOf(entry?.value ?? new ReadableStream())).toEqual(VALUE);
+    for (const entry of entries)
+      expect(await bytesOf(entry?.value ?? new ReadableStream())).toEqual(VALUE);
   });
 }
