@@ -11,6 +11,7 @@ import { recordedCalls, type RecordedCalls } from "./records.js";
 
 const NEXT_BIN = join(FIXTURE_DIR, "node_modules", ".bin", "next");
 const READY_TIMEOUT = 60_000;
+const MARKER_TIMEOUT = 20_000;
 
 /** The two Instances of a Scenario, on one store and one Key prefix. */
 export type InstanceName = "A" | "B";
@@ -21,6 +22,21 @@ export interface Page {
   html: string;
   /** Marker name (`list-page`, `post-body`, …) to the instant that scope rendered. */
   markers: Record<string, string>;
+  /** What the response set as cookies, by name: the Draft Mode bypass cookie among them. */
+  cookies: Record<string, string>;
+}
+
+/**
+ * The `cookie` header carrying back what a response set, for the request that follows.
+ * A Scenario that drives Draft Mode reads `/api/draft` and hands this to its next `get`;
+ * the harness keeps no cookie of its own, so a step says which response it is carrying.
+ */
+export function cookieHeader(page: Page): Record<string, string> {
+  return {
+    cookie: Object.entries(page.cookies)
+      .map(([name, value]) => `${name}=${value}`)
+      .join("; "),
+  };
 }
 
 /** One Scenario's Instance pair, their Recorded calls, and the ways to drive them. */
@@ -33,6 +49,22 @@ export interface Instances {
   calls: RecordedCalls;
   /** Request a path from one Instance. */
   get(instance: InstanceName, path: string, headers?: Record<string, string>): Promise<Page>;
+  /**
+   * The markers of a path on one Instance, once the named scope has stopped rendering the
+   * instant it was rendered at before: a revalidation reaches an Instance when it reads the
+   * Tag manifest again, and a Stale one regenerates in the background, neither of which any
+   * instant of a Scenario's clock names.
+   *
+   * Only a 200 that carries the marker ends the wait. A page that failed, or one that
+   * rendered the scope away, has a marker of `undefined`, which differs from every instant
+   * and would end the wait on an observation nobody made.
+   */
+  markersOnceChanged(
+    instance: InstanceName,
+    path: string,
+    marker: string,
+    before: string | undefined,
+  ): Promise<Record<string, string>>;
   /** Run a Server Action on one Instance, by the name the Fixture exports it under. */
   action(instance: InstanceName, exportedName: string): Promise<number>;
   /** Stop both Instances. */
@@ -63,12 +95,35 @@ export async function startInstances(scenario: string): Promise<Instances> {
   const running = { A: a, B: await second(a, scenario, build.redisUrl, keyPrefix, recordFile) };
   const urlOf = (instance: InstanceName): string => running[instance].url;
 
+  const get = async (
+    instance: InstanceName,
+    path: string,
+    headers?: Record<string, string>,
+  ): Promise<Page> => pageOf(await fetch(urlOf(instance) + path, { headers }));
+
   return {
     buildId: build.buildId,
     keyPrefix,
     calls: recordedCalls(recordFile),
-    get: async (instance, path, headers) =>
-      pageOf(await fetch(urlOf(instance) + path, { headers })),
+    get,
+    markersOnceChanged: async (instance, path, marker, before) => {
+      if (before === undefined) {
+        throw new Error(`the page rendered no \`${marker}\` marker to wait for a change of`);
+      }
+      let markers: Record<string, string> = {};
+      await vi.waitUntil(
+        async () => {
+          const page = await get(instance, path);
+          markers = page.markers;
+          const rendered = markers[marker];
+
+          return page.status === 200 && rendered !== undefined && rendered !== before;
+        },
+        { timeout: MARKER_TIMEOUT, interval: 100 },
+      );
+
+      return markers;
+    },
     action: async (instance, exportedName) => {
       const response = await fetch(urlOf(instance) + "/", {
         method: "POST",
@@ -220,7 +275,18 @@ async function actionId(exportedName: string): Promise<string> {
 async function pageOf(response: Response): Promise<Page> {
   const html = await response.text();
 
-  return { status: response.status, html, markers: markersOf(html) };
+  return { status: response.status, html, markers: markersOf(html), cookies: cookiesOf(response) };
+}
+
+function cookiesOf(response: Response): Record<string, string> {
+  const cookies: Record<string, string> = {};
+  for (const header of response.headers.getSetCookie()) {
+    const [pair = ""] = header.split(";");
+    const separator = pair.indexOf("=");
+    if (separator > 0) cookies[pair.slice(0, separator)] = pair.slice(separator + 1);
+  }
+
+  return cookies;
 }
 
 function markersOf(html: string): Record<string, string> {

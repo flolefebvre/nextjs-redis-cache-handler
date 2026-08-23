@@ -10,10 +10,12 @@ Soft tag, Stale, Expired, Tag manifest, Handler slot).
 numbers refer to the compiled `dist/**/*.js`. **[docs]** means the Markdown
 shipped in `dist/docs/01-app/`. Anything marked **[unverified]** has not been
 traced to source yet and should be replaced by the ticket that verifies it.
-**[measured]** means observed on the fixture prototype
-(branch `prototype/e2e-fixture`, `next@16.3.2`, two `next start` instances on
-one build). Where docs and source disagree, the source wins and the
-disagreement is listed in [Docs vs source](#docs-vs-source). Longer traces live in
+**[measured]** means observed on two `next start` Instances of one build
+(`next@16.3.2`): first on the fixture prototype (branch
+`prototype/e2e-fixture`), and now on the e2e Scenarios under `e2e/`, which the
+gate runs and which are named where they are the source. Where docs and source
+disagree, the source wins and the disagreement is listed in
+[Docs vs source](#docs-vs-source). Longer traces live in
 `docs/research/use-cache-wrapper.md` (the `'use cache'` wrapper) and
 `docs/research/node-redis-capabilities.md`.
 
@@ -62,7 +64,11 @@ A's fresh Entry); only the page shell is per-instance. Dynamic / PPR routes
 (a `<Suspense>` boundary whose content depends on request data) read their
 Entries on every request and see propagation immediately; in a PPR route this
 holds for Entries used inside the dynamic hole, while its static shell is an
-ISR copy like any prerendered route **[unverified]**. Sharing the ISR cache is
+ISR copy like any prerendered route: after `updateTag` on A, B's shell keeps
+the marker it was prerendered with — the handler is not consulted for the
+scopes the shell rendered, expired tag or not — while the same request reads
+the hole's own Entry and records a `miss:expired` for it **[measured]**
+`e2e/static-boundary.e2e.test.ts`. Sharing the ISR cache is
 the singular `cacheHandler`'s job, outside this document and this library;
 Next.js documents the per-instance behaviour itself **[docs]**
 `incremental-static-regeneration.md` ("Multi-instance"), `self-hosting.md`
@@ -389,7 +395,12 @@ Per `'use cache'` call **[source]** `use-cache-wrapper.js:1977-2499`:
 2. **Force-revalidate** skips `get` entirely (treated as a miss) when
    `workStore.isOnDemandRevalidate`, Draft Mode is on, or in dev the request
    carries `cache-control: no-cache` (`:2131`, `:2514-2539`). In Draft Mode the
-   result is also not written to the handler (`:2334`).
+   result is also not written to the handler (`:2334`). What a Draft Mode
+   request leaves the handler with is therefore `refreshTags` alone — once per
+   handler slot, as in any request — and no `get`, no `set` and no
+   `getExpiration`; every cached scope re-renders, and the same request without
+   the bypass cookie is served from the Entries again **[measured]**
+   `e2e/draft-mode.e2e.test.ts`.
 3. `await refreshTags()` (lazy), then `entry = await get(key, softTags)`
    (`:2132`). An exception from `get` is a render error, not a miss
    (`:2471-2474`).
