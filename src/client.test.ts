@@ -147,8 +147,7 @@ test.each(KINDS)(
     const attached = counted();
     await handler.close();
 
-    const added = before.map((count, index) => (attached[index] ?? 0) - count);
-    expect(Math.min(...added)).toBeGreaterThan(0);
+    expect(attached).toEqual(before.map((count) => count + 1));
     expect(counted()).toEqual(before);
   },
 );

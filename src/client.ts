@@ -399,11 +399,11 @@ function ownedClient(url: string, report: (error: unknown) => void): CacheClient
 }
 
 /**
- * A client the caller owns: used exactly as it was handed over. The handler's own
- * listeners are the one thing it adds, so that a connection failure of an injected client —
- * its own, or that of a node under it — is reported like any other and a reconnection of it
- * is counted, and `close()` takes them back off: one long-lived client feeding many handler objects must not collect a
- * listener per handler.
+ * A client the caller owns: used exactly as it was handed over. The handler's own listeners
+ * are the one thing it adds, so that a connection failure of an injected client — its own, or
+ * that of a node under it — is reported like any other and a reconnection of it is counted,
+ * and `close()` takes them back off: one long-lived client feeding many handler objects must
+ * not collect a listener per handler.
  */
 function injectedClient(client: CacheClient, report: (error: unknown) => void): CacheClientHandle {
   const listeners = listenTo(client, report);
