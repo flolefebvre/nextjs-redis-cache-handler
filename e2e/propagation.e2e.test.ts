@@ -14,18 +14,21 @@ afterAll(async () => {
   await instances?.stop();
 });
 
-test("the first request on each Instance reads what `next build` prewarmed", async () => {
+test("the first request reads what `next build` prewarmed, and fills what it could not", async () => {
   const from = await instances.calls.end();
 
   const a = await instances.get("A", PPR);
+  await instances.calls.waitFor(from, (call) => call.method === "set");
   const b = await instances.get("B", PPR);
 
   const calls = await instances.calls.since(from);
   expect([a.status, b.status]).toEqual([200, 200]);
   expect(outcomesOf(calls, "A")).toEqual(
+    new Set(["refreshTags ok", "get hit", "getExpiration ok", "get miss:absent", "set set"]),
+  );
+  expect(outcomesOf(calls, "B")).toEqual(
     new Set(["refreshTags ok", "get hit", "getExpiration ok"]),
   );
-  expect(outcomesOf(calls, "B")).toEqual(outcomesOf(calls, "A"));
 });
 
 test("an Entry one Instance wrote is served by the other", async () => {

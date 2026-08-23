@@ -29,8 +29,16 @@ async function Hole() {
 
   return (
     <section>
-      <p data-rendered-at="ppr-hole">{renderedAt()}</p>
+      <p data-rendered-at="ppr-request">{renderedAt()}</p>
+      <HoleNote />
       <p data-posts-count>{posts.length}</p>
     </section>
   );
+}
+
+async function HoleNote() {
+  "use cache";
+  cacheTag("posts");
+
+  return <p data-rendered-at="ppr-hole">{renderedAt()}</p>;
 }
