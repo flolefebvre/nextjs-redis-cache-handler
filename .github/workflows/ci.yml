@@ -101,3 +101,45 @@ jobs:
       # Needs the runner's Docker daemon: the e2e project starts its own throwaway Valkey.
       - name: E2e
         run: pnpm test:e2e
+
+  # The integration project against every supported server, one cell per image through
+  # `CACHE_TEST_IMAGE`: the floors the README declares (Redis 6.2, Valkey 7.2) and the
+  # latest of each family. `fail-fast: false`, so a command one server lacks shows up as
+  # that server's cell rather than cancelling the others.
+  matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - valkey/valkey:7.2
+          - valkey/valkey:9
+          - redis:6.2
+          - redis:8
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Needs the runner's Docker daemon: the integration project starts its own
+      # throwaway server, on the image of this cell.
+      - name: Integration
+        run: pnpm test:integration
+        env:
+          CACHE_TEST_IMAGE: ${{ matrix.image }}
