@@ -267,8 +267,7 @@ export interface CacheClientHandle {
    * Quit a client the handler owns, or resolve immediately when it was never used. A
    * connection attempt still in progress is destroyed rather than awaited: the reconnect
    * strategy never gives up, so a shutdown during an outage would otherwise never return.
-   * An injected client is left open, and only the handler's own listeners are taken off
-   * it.
+   * An injected client is left open, and only the handler's own listeners are taken off it.
    */
   close(): Promise<void>;
 }
