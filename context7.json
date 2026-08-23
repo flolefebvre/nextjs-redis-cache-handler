@@ -24,7 +24,8 @@
     "ESM only, Node >= 22.12. The public entry points are the package root and the `/handler` subpath; `/handler-target` exists only for the entry's own self-reference and is internal.",
     "`next` is a peer dependency and is never imported at runtime: the handler interface is vendored and guarded by a type-only contract test.",
     "The key prefix is the only isolation between apps sharing one server. Redis databases are never used.",
-    "An app configures the handler in one of two ways: the Zero-config entry, registered by path in `cacheHandlers` and configured from `REDIS_URL` and the `NEXT_REDIS_CACHE_*` variables, or `createRedisCacheHandler(options)` from its own module, for an injected client and the `onEvent`/`onError` hooks. Options are validated synchronously at factory time.",
+    "An app configures the handler in one of two ways: the Zero-config entry, registered by path in `cacheHandlers` and configured from `REDIS_URL` and the `NEXT_REDIS_CACHE_*` variables, or `createRedisCacheHandler(options)` from its own handler module.",
+    "The factory is the way to an injected client and to the `onEvent`/`onError` hooks; its options are validated synchronously, so a bad value throws at factory time, not on the first request.",
     "A store that is slow or down makes reads miss and writes drop within `operationTimeout`; `updateTags` is the one method that retries and then throws, so a lost invalidation fails the Server Action rather than leaving Instances stale."
   ]
 }
