@@ -58,7 +58,7 @@
     "format:check": "prettier --check .",
     "lint": "eslint --max-warnings=0",
     "duplication": "jscpd",
-    "typecheck": "node --max-old-space-size=4096 node_modules/typescript/bin/tsc --noEmit",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run --project unit --project integration",
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
