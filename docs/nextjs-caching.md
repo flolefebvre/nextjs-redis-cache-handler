@@ -13,8 +13,9 @@ traced to source yet and should be replaced by the ticket that verifies it.
 **[measured]** means observed on two `next start` Instances of one build
 (`next@16.3.2`): first on the fixture prototype (branch
 `prototype/e2e-fixture`), and now on the e2e Scenarios under `e2e/`, which the
-gate runs and which are named where they are the source. Where docs and source disagree, the source wins and the
-disagreement is listed in [Docs vs source](#docs-vs-source). Longer traces live in
+gate runs and which are named where they are the source. Where docs and source
+disagree, the source wins and the disagreement is listed in
+[Docs vs source](#docs-vs-source). Longer traces live in
 `docs/research/use-cache-wrapper.md` (the `'use cache'` wrapper) and
 `docs/research/node-redis-capabilities.md`.
 
