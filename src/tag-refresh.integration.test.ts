@@ -8,6 +8,7 @@ import {
   instancePair,
   opsOf,
   recording,
+  seedHandlerClock,
   seedTagEvents,
   serverClient,
   type ServerClient,
@@ -44,6 +45,13 @@ const SLOW_TIMEOUT_MS = 60_000;
  */
 const WATERMARK_FIELDS = 10;
 
+/**
+ * How far ahead of the server's wall clock a cell holds the Handler clock: more than any
+ * backward step the host is known to take, the ten seconds `STEP_MS` stands for in
+ * `handler-clock.integration.test.ts`.
+ */
+const HOLD_MS = 10_000;
+
 const SEED = `
 local clock = redis.call('TIME')
 local score = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000) - ${SEEDED_AGE_MS}
@@ -58,6 +66,7 @@ return 1
 test("an event written between two refreshes is picked up without reading the manifest again", async () => {
   const { keyPrefix, instanceA, instanceB } = instancePair();
   await storeBefore(instanceA, "posts", { tags: ["posts"] });
+  await holdHandlerClockAhead(keyPrefix);
   await instanceB.refreshTags();
   const stream = await commandStream(keyPrefix);
 
@@ -83,6 +92,7 @@ test("the first refresh of a process reads the whole manifest", async () => {
 
 test("ten concurrent refreshes are one read round trip, and all of them resolve", async () => {
   const keyPrefix = freshPrefix();
+  await holdHandlerClockAhead(keyPrefix);
   const handler = handlerFor(keyPrefix);
   await handler.refreshTags();
   await handler.refreshTags();
@@ -112,6 +122,7 @@ test("a tag event too old to affect any living Entry stops hiding one", async ()
   const past = (await serverNow(server)) - EVENT_AGE_MS;
 
   await seedTagEvents(server, keyPrefix, ["posts"], past, past);
+  await holdHandlerClockAhead(keyPrefix);
   await reader.refreshTags();
 
   expect(await reader.get("posts", [])).toBeUndefined();
@@ -121,6 +132,7 @@ test("a tag event too old to affect any living Entry stops hiding one", async ()
 
 test("both reads of the Tag manifest stay within the portable command set", async () => {
   const { keyPrefix, instanceA, instanceB } = instancePair();
+  await holdHandlerClockAhead(keyPrefix);
   const stream = await commandStream(keyPrefix);
 
   await instanceB.refreshTags();
@@ -129,18 +141,7 @@ test("both reads of the Tag manifest stay within the portable command set", asyn
 
   const names = new Set(tagCommandNames(await stream.settled(), keyPrefix));
   expect(names).toEqual(
-    new Set([
-      "EVALSHA",
-      "GET",
-      "SET",
-      "HGETALL",
-      "ZCARD",
-      "HLEN",
-      "ZRANGE",
-      "HMGET",
-      "HSET",
-      "ZADD",
-    ]),
+    new Set(["EVALSHA", "GET", "HGETALL", "ZCARD", "HLEN", "ZRANGE", "HMGET", "HSET", "ZADD"]),
   );
 });
 
@@ -213,6 +214,7 @@ test(
     const keyPrefix = freshPrefix();
     const server = await serverClient();
     await seedManifest(server, keyPrefix, SEEDED_TAGS);
+    await holdHandlerClockAhead(keyPrefix);
     const { errors, hooks } = recording();
     const handler = handlerFor(keyPrefix, hooks);
     await handler.updateTags(["warm-up"]);
@@ -230,6 +232,28 @@ test(
     expect(watermarkMs).toBeLessThan(DEFAULT_OPERATION_TIMEOUT);
   },
 );
+
+/**
+ * Persist a Handler clock floor above the server's wall clock, so that every read of this
+ * Key prefix comes back at that floor: a value no backward step of the host's wall clock
+ * can bring a later read below, which keeps the watermark comparison of two reads with no
+ * stamp between them monotone for the whole cell (ADR 0003).
+ *
+ * It goes before the tag events the cell stamps, never after them: a stamp issued under
+ * the floor lands on it, so those events stay inside the margin the next read reaches back
+ * over, while a floor raised after them would leave them a hold below it, outside the
+ * range that read asks for. An event a cell seeds at a score of its own is not a stamp and
+ * is unaffected either way — but the floor still goes after the Entries the cell writes,
+ * whose Write time it would otherwise raise above such an event.
+ *
+ * A stamp issued under the held clock persists nothing — the floor is already there — so
+ * no `SET` of the clock key appears in a stream recorded under it.
+ */
+async function holdHandlerClockAhead(keyPrefix: string): Promise<void> {
+  const server = await serverClient();
+
+  await seedHandlerClock(server, keyPrefix, (await serverNow(server)) + HOLD_MS);
+}
 
 async function seedManifest(server: ServerClient, keyPrefix: string, tags: number): Promise<void> {
   for (let first = 0; first < tags; first += SEED_BATCH) {
