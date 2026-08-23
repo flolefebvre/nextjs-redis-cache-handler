@@ -3,6 +3,11 @@
 A Redis/Valkey-backed cache handler for Next.js Cache Components (`'use cache'`), so that every Instance of a
 multi-instance deployment shares the same cached output and sees the same revalidation events.
 
+> **Early release (0.x).** New, well-tested, not yet proven in production: real-server integration tests, a
+> contract test against Next.js's own handler, and a two-instance end-to-end suite, but no production mileage.
+> Until 1.0, minor versions may change behaviour or options — pin the version and
+> [report anything surprising](https://github.com/flolefebvre/nextjs-redis-cache-handler/issues).
+
 ## What it is
 
 A Next.js app using Cache Components (`'use cache'`) and deployed as several Instances behind a load balancer has
