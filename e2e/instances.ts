@@ -125,6 +125,12 @@ export interface Instances {
    */
   logged(instance: InstanceName, text: string): Promise<string[]>;
   /**
+   * The lines an Instance has logged that contain `text` right now, waiting for none: what
+   * a step asserts the _absence_ of, once it has waited out something the same failure
+   * would have produced. `logged` waits a line out and would never end on an absence.
+   */
+  loggedSoFar(instance: InstanceName, text: string): Promise<string[]>;
+  /**
    * Stop both Instances, and remove the store when it was this Scenario's own. An outage
    * a failed step left in place is lifted first: removing a frozen container waits the
    * runtime's stop timeout out before it kills it.
@@ -253,7 +259,16 @@ export async function startInstances(
 
       return markers;
     },
-    logged: (instance, text) => loggedLines(logFile(scenario, instance), text),
+    logged: async (instance, text) => {
+      const file = logFile(scenario, instance);
+      await vi.waitUntil(async () => (await loggedLines(file, text)).length > 0, {
+        timeout: MARKER_TIMEOUT,
+        interval: 100,
+      });
+
+      return loggedLines(file, text);
+    },
+    loggedSoFar: (instance, text) => loggedLines(logFile(scenario, instance), text),
     action: async (instance, exportedName) => {
       const response = await fetch(urlOf(instance) + "/", {
         method: "POST",
@@ -367,17 +382,7 @@ function logFile(scenario: string, name: InstanceName): string {
 }
 
 async function loggedLines(file: string, text: string): Promise<string[]> {
-  let lines: string[] = [];
-  await vi.waitUntil(
-    async () => {
-      lines = (await readFile(file, "utf-8")).split("\n").filter((line) => line.includes(text));
-
-      return lines.length > 0;
-    },
-    { timeout: MARKER_TIMEOUT, interval: 100 },
-  );
-
-  return lines;
+  return (await readFile(file, "utf-8")).split("\n").filter((line) => line.includes(text));
 }
 
 async function waitUntilServing(url: string, child: ChildProcess): Promise<void> {
