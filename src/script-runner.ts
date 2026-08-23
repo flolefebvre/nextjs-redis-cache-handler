@@ -10,7 +10,7 @@ import {
 import type { CacheScript } from "./scripts.js";
 
 const NO_SCRIPT = "NOSCRIPT";
-const WRITES = false;
+const READ_ONLY = false;
 
 /**
  * The keys one script declares, first the one it is routed by. It is a non-empty list
@@ -78,12 +78,12 @@ function sender(
   if (kind === "cluster") {
     const cluster = commands as ClusterCacheCommands;
 
-    return (command) => cluster.sendCommand(firstKey, WRITES, command);
+    return (command) => cluster.sendCommand(firstKey, READ_ONLY, command);
   }
   if (kind === "sentinel") {
     const sentinel = commands as SentinelCacheCommands;
 
-    return (command) => sentinel.sendCommand(WRITES, command);
+    return (command) => sentinel.sendCommand(READ_ONLY, command);
   }
 
   const standalone = commands as CacheCommands;
