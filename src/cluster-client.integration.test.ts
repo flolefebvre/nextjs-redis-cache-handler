@@ -41,10 +41,7 @@ describe.skipIf(providedRedisUrl() !== undefined)("an injected Cluster client", 
 
   sharesTheStore(() => ({ client, nodeUrls: deployment.nodeUrls }));
 
-  reportsNodeFailures(
-    () => ({ client, nodeUrls: deployment.nodeUrls }),
-    ({ nodeUrls }) => onEveryNode(nodeUrls, KILL_CONNECTIONS),
-  );
+  reportsNodeFailures(() => ({ client, nodeUrls: deployment.nodeUrls }));
 
   test(
     "a node connection rebuilt is counted, so the next refresh reads the whole manifest",

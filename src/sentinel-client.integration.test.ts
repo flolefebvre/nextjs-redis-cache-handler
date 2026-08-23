@@ -62,10 +62,7 @@ describe.skipIf(providedRedisUrl() !== undefined)("an injected Sentinel client",
 
   sharesTheStore(() => ({ client, nodeUrls: deployment.nodeUrls }));
 
-  reportsNodeFailures(
-    () => ({ client: passthrough, nodeUrls: deployment.nodeUrls }),
-    ({ nodeUrls }) => onEveryNode(nodeUrls, KILL_CONNECTIONS),
-  );
+  reportsNodeFailures(() => ({ client: passthrough, nodeUrls: deployment.nodeUrls }));
 
   test(
     "a connection rebuilt to the same master loses nothing, and is not counted",

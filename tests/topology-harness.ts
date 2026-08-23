@@ -380,27 +380,24 @@ const NAMED_NODE = /\(.+:\d+\): /;
  * naming the node it happened on, and the deployment carries on propagating afterwards.
  *
  * It is one function rather than one copy per topology for the same reason `sharesTheStore`
- * is, and it disturbs the deployment through `acrossADisturbance`, so that what it breaks is
- * broken the way the counting cells of each file break it. What that disturbance is belongs
- * to the caller, since only its kind of client knows which failure of a node it lets out.
+ * is, and the disturbance is the one every deployment here is broken by — the connections of
+ * every node killed — taken through `acrossADisturbance`, so that what it breaks is broken
+ * the way the counting cells of each file break it.
  *
- * A Cluster client lets one out on `node-error` and is handed here as it is used. A Sentinel
- * client lets one out on nothing node-redis's `RedisSentinel` forwards — it keeps its node
- * clients' errors on an internal emitter and forwards only `error` and `topology-change` —
- * so the client handed here is one built with `passthroughClientErrorEvents`, the single
+ * A Cluster client lets that failure out on `node-error` and is handed here as it is used. A
+ * Sentinel client lets it out on nothing node-redis's `RedisSentinel` forwards — it keeps its
+ * node clients' errors on an internal emitter and forwards only `error` and `topology-change`
+ * — so the client handed here is one built with `passthroughClientErrorEvents`, the single
  * option under which a node's failure reaches a caller of that kind at all.
  */
-export function reportsNodeFailures(
-  topology: () => Topology,
-  disturb: (deployment: Topology) => Promise<unknown>,
-): void {
+export function reportsNodeFailures(topology: () => Topology): void {
   test(
     "the failure of a node connection is reported as a connect failure, and propagation survives it",
     async () => {
       const deployment = topology();
 
       const disturbed = await acrossADisturbance(deployment, async (failures) => {
-        await disturb(deployment);
+        await onEveryNode(deployment.nodeUrls, KILL_CONNECTIONS);
         await vi.waitFor(() => expect(failures()).not.toHaveLength(0), REPORTED_TIMEOUT_MS);
       });
 
