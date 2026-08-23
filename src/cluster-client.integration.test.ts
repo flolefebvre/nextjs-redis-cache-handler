@@ -1,7 +1,7 @@
 import { createCluster, type RedisClusterType } from "redis";
-import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
-import { freshPrefix, storeBefore, wait } from "../tests/handler-harness.js";
+import { wait } from "../tests/handler-harness.js";
 import {
   providedRedisUrl,
   startClusterRedis,
@@ -9,17 +9,19 @@ import {
   type RunningTopology,
 } from "../tests/redis-container.js";
 import {
-  instanceOn,
+  acrossADisturbance,
+  connected,
+  KILL_CONNECTIONS,
   onEveryNode,
   sharesTheStore,
-  tagCommandsOn,
+  stopped,
 } from "../tests/topology-harness.js";
 
 const DEPLOYMENT_TIMEOUT = 180_000;
 
-const REBUILD_TIMEOUT = 30_000;
+const REBUILD_TIMEOUT = 60_000;
 
-/** Long enough for a killed node connection to be noticed and dialled again. */
+/** Long enough for a killed node connection to be dialled again once it was noticed. */
 const REBUILT_MS = 200;
 
 describe.skipIf(providedRedisUrl() !== undefined)("an injected Cluster client", () => {
@@ -33,35 +35,25 @@ describe.skipIf(providedRedisUrl() !== undefined)("an injected Cluster client", 
     await client.connect();
   }, DEPLOYMENT_TIMEOUT);
 
-  afterAll(async () => {
-    await client.close().catch(() => undefined);
-    await deployment.stop();
-  });
+  afterAll(() => stopped(client, deployment));
 
-  sharesTheStore(() => ({
-    client: client,
-    nodeUrls: deployment.nodeUrls,
-  }));
+  sharesTheStore(() => ({ client, nodeUrls: deployment.nodeUrls }));
 
   test(
     "a node connection rebuilt is counted, so the next refresh reads the whole manifest",
     async () => {
-      const keyPrefix = freshPrefix();
-      const reader = instanceOn(client, keyPrefix);
-      const writer = instanceOn(client, keyPrefix);
-      await storeBefore(writer, "posts", { tags: ["posts"] });
-      await reader.refreshTags();
-      const rebuilt = new Promise((resolve) => client.once("node-reconnecting", resolve));
+      const topology = { client, nodeUrls: deployment.nodeUrls };
 
-      await onEveryNode(deployment.nodeUrls, ["CLIENT", "KILL", "TYPE", "normal"]);
-      await rebuilt;
-      await wait(REBUILT_MS);
-      const settled = await tagCommandsOn(keyPrefix, deployment.nodeUrls);
-      await vi.waitFor(() => writer.updateTags(["posts"]));
-      await reader.refreshTags();
+      const disturbed = await acrossADisturbance(topology, async () => {
+        const rebuilt = new Promise((resolve) => client.once("node-reconnecting", resolve));
+        await onEveryNode(deployment.nodeUrls, KILL_CONNECTIONS);
+        await rebuilt;
+        await wait(REBUILT_MS);
+      });
 
-      expect(await reader.get("posts", [])).toBeUndefined();
-      expect(await settled()).toContain("HGETALL");
+      expect(disturbed.entry).toBeUndefined();
+      expect(disturbed.tagCommands).toContain("HGETALL");
+      expect(disturbed.rebuilds).toBeGreaterThan(0);
     },
     REBUILD_TIMEOUT,
   );

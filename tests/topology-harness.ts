@@ -1,9 +1,10 @@
 import { createClient } from "redis";
-import { expect, onTestFinished, test } from "vitest";
+import { expect, onTestFinished, test, vi } from "vitest";
 
 import type { CacheClient } from "../src/client.js";
 import { createRedisCacheHandler } from "../src/redis-cache-handler.js";
-import type { CacheHandler } from "../src/types.js";
+import { createCacheClient } from "../src/client.js";
+import type { CacheEntry, CacheHandler } from "../src/types.js";
 import {
   bytesOf,
   commandStream,
@@ -14,6 +15,7 @@ import {
   tagCommandNames,
   VALUE,
 } from "./handler-harness.js";
+import type { RunningTopology } from "./redis-container.js";
 
 /** A deployment one test file owns, and the client the handler is given for it. */
 export interface Topology {
@@ -66,6 +68,84 @@ export async function tagCommandsOn(
 
     return perNode.flatMap((commands) => tagCommandNames(commands, keyPrefix));
   };
+}
+
+/** What a test file's own client must offer for the harness to open and close it. */
+interface ConnectableClient {
+  on(event: "error", listener: () => void): unknown;
+  connect(): Promise<unknown>;
+}
+
+/** The command every test sends to drop the connections a client holds to one node. */
+export const KILL_CONNECTIONS = ["CLIENT", "KILL", "TYPE", "normal"];
+
+/** What a deployment showed of itself while a connection under it was rebuilt. */
+export interface Disturbed {
+  /** What the reader reads for the invalidated Entry once it has taken in the tag events. */
+  entry: CacheEntry | undefined;
+  /** The commands the Tag manifest and its log were carried by, over every node. */
+  tagCommands: string[];
+  /** How many rebuilt connections were counted while it happened. */
+  rebuilds: number;
+}
+
+/**
+ * Put two Instances of one app on either side of a disturbance, and hand back what the
+ * deployment showed of it: whether the tag event one Instance wrote after it reached the
+ * other, whether that Instance read the whole manifest to see it, and how many rebuilt
+ * connections were counted on the way.
+ *
+ * The disturbance is the caller's — a killed connection, a failover — and so is the wait
+ * for it to have happened: only the caller knows what its kind of client says when it has.
+ * Everything around it is the same narrative whichever deployment is under it, which is
+ * what makes the answers comparable.
+ */
+export async function acrossADisturbance(
+  { client, nodeUrls }: Topology,
+  disturb: () => Promise<void>,
+): Promise<Disturbed> {
+  const keyPrefix = freshPrefix();
+  const handle = createCacheClient({ client }, () => undefined);
+  const reader = instanceOn(client, keyPrefix);
+  const writer = instanceOn(client, keyPrefix);
+  await storeBefore(writer, "posts", { tags: ["posts"] });
+  await reader.refreshTags();
+  const counted = handle.reconnects();
+
+  await disturb();
+
+  const settled = await tagCommandsOn(keyPrefix, nodeUrls);
+  await vi.waitFor(() => writer.updateTags(["posts"]));
+  await reader.refreshTags();
+  const disturbed = {
+    entry: await reader.get("posts", []),
+    tagCommands: await settled(),
+    rebuilds: handle.reconnects() - counted,
+  };
+  await handle.close();
+
+  return disturbed;
+}
+
+/**
+ * A client one test file created, listened to and connected: node-redis crashes the
+ * process on a client that has no `error` listener, and a test file's client is the one
+ * thing here the handler does not attach one to itself.
+ */
+export async function connected<Client extends ConnectableClient>(client: Client): Promise<Client> {
+  client.on("error", () => undefined);
+  await client.connect();
+
+  return client;
+}
+
+/** Close a client one test file created and take its deployment down. */
+export async function stopped(
+  client: { close(): Promise<void> },
+  deployment: RunningTopology,
+): Promise<void> {
+  await client.close().catch(() => undefined);
+  await deployment.stop();
 }
 
 /**
