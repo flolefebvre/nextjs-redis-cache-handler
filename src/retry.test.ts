@@ -26,6 +26,42 @@ const SHORT_BUDGET = 1;
 
 const OUTLASTING = SHORT_BUDGET + 1;
 
+const WRONG_TYPE = "WRONGTYPE Operation against a key holding the wrong kind of value";
+
+/** Reply errors no retry can turn into a success: the loop must end on the first of them. */
+const FINAL_REPLIES = [
+  WRONG_TYPE,
+  "NOPERM this user has no permissions to run the 'hset' command",
+  "OOM command not allowed when used memory > 'maxmemory'",
+  "NOAUTH Authentication required",
+  "WRONGPASS invalid username-password pair or user is disabled",
+  "ERR Error running script (call to f_0123): @user_script:12: WRONGTYPE Operation against a key holding the wrong kind of value",
+];
+
+/** Reply errors naming a state that clears by itself, which the loop must ride out. */
+const TRANSIENT_REPLIES = [
+  "LOADING Redis is loading the dataset in memory",
+  "BUSY Redis is busy running a script",
+  "MASTERDOWN Link with MASTER is down and replica-serve-stale-data is set to 'no'",
+  "READONLY You can't write against a read only replica",
+  "NOREPLICAS Not enough good replicas to write",
+  "CLUSTERDOWN The cluster is down",
+  "TRYAGAIN Multiple keys request during rehashing of slot",
+  "MOVED 3999 127.0.0.1:6381",
+  "ASK 3999 127.0.0.1:6381",
+];
+
+/** What node-redis raises off the wire rather than from a reply, which the loop must ride out too. */
+const OFF_THE_WIRE = [
+  "The client is closed",
+  "The client is offline",
+  "Socket closed unexpectedly",
+  "Connection timeout",
+  "connect ECONNREFUSED 127.0.0.1:6379",
+];
+
+const RETRIED_FAILURES = [...TRANSIENT_REPLIES, ...OFF_THE_WIRE];
+
 function budget(overrides: Partial<RetryBudget> = {}): RetryBudget {
   return {
     budgetMs: BUDGET,
@@ -210,5 +246,61 @@ describe("withRetries", () => {
     expect(gaps.at(0) ?? 0).toBeLessThan(BACKOFF * 2);
     expect(gaps.at(1) ?? 0).toBeGreaterThanOrEqual(BACKOFF * 2 - TIMER_SLACK);
     expect(Math.max(...gaps)).toBeLessThan(BACKOFF_CAP + MARGIN);
+  });
+});
+
+describe("withRetries, on a reply error", () => {
+  test.each(FINAL_REPLIES)("stops at once on %s", async (message) => {
+    const attempts = starts();
+
+    const retried = withRetries("updateTags", budget(), () => {
+      attempts.mark();
+
+      return Promise.reject(new Error(message));
+    });
+
+    await expect(retried).rejects.toBeInstanceOf(GaveUpError);
+    expect(attempts.at).toHaveLength(1);
+  });
+
+  test.each(RETRIED_FAILURES)("keeps retrying %s", async (message) => {
+    const attempts = starts();
+
+    const returned = await withRetries("updateTags", budget(), () => {
+      attempts.mark();
+
+      return attempts.at.length < 2 ? Promise.reject(new Error(message)) : Promise.resolve(WRITTEN);
+    });
+
+    expect(returned).toBe(WRITTEN);
+    expect(attempts.at).toHaveLength(2);
+  });
+
+  test("keeps retrying a deadline", async () => {
+    const attempts = starts();
+
+    const returned = await withRetries("updateTags", budget(), () => {
+      attempts.mark();
+
+      return attempts.at.length < 2
+        ? Promise.reject(new DeadlineError(ATTEMPT_TIMEOUT))
+        : Promise.resolve(WRITTEN);
+    });
+
+    expect(returned).toBe(WRITTEN);
+    expect(attempts.at).toHaveLength(2);
+  });
+
+  test("gives up the same way, naming the operation and the reply code", async () => {
+    const failure = new Error(WRONG_TYPE);
+    const elapsed = stopwatch();
+
+    const retried = withRetries("updateTags", budget(), () => Promise.reject(failure));
+
+    await expect(retried).rejects.toBeInstanceOf(GaveUpError);
+    await expect(retried).rejects.toHaveProperty("cause", failure);
+    await expect(retried).rejects.toThrow(/updateTags/);
+    await expect(retried).rejects.toThrow(/WRONGTYPE/);
+    expect(elapsed()).toBeLessThan(BUDGET);
   });
 });

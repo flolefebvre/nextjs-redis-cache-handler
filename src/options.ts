@@ -69,7 +69,9 @@ export interface RedisCacheHandlerOptions {
    * lost invalidation would leave every Instance serving output the mutation replaced,
    * so the attempts are spread over this budget with an exponential backoff, each one
    * bounded by `operationTimeout` or by what is left of the budget, whichever is
-   * smaller. Past it the call rejects, having reported once through `onError`.
+   * smaller. Past it the call rejects, having reported once through `onError` — and it
+   * rejects before it, the same way, on a reply error retrying cannot fix, a `WRONGTYPE`
+   * on a corrupted Tag manifest key or a `NOPERM` from an ACL among them.
    */
   updateTagsTimeout?: number;
   /**

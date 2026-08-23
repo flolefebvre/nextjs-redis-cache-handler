@@ -57,11 +57,13 @@ type ReadOutcome =
  * it may have landed. Each attempt is bounded by `operationTimeout` or by what is left of
  * the budget, whichever is smaller, so the caller waits the budget and no more, and
  * `onError` is called exactly once for the whole call, on the failure it ends with — not
- * once per attempt. Every failure is retried, a deterministic one included: a reply
- * error is not read as final, since `LOADING`, `READONLY`, `CLUSTERDOWN` and `TRYAGAIN`
- * are reply errors an instant later succeeds through, so a write that can only fail
- * takes the whole budget before it throws. A call with no tag is not a round trip at
- * all.
+ * once per attempt. Nearly every failure is retried — a deadline, a client with no
+ * connection, and the reply errors naming a state the server clears on its own,
+ * `LOADING`, `BUSY`, `MASTERDOWN`, `READONLY`, `CLUSTERDOWN` and `TRYAGAIN` among them.
+ * The one exception is a reply error retrying cannot fix, `WRONGTYPE` on a corrupted Tag
+ * manifest key, `NOPERM` from an ACL or the `ERR` a failing script comes back as: the
+ * store answers it to every further attempt, so the call throws on it at once instead of
+ * spending the budget first. A call with no tag is not a round trip at all.
  *
  * `operationTimeout` bounds every one of them, the wait on the connection included, so
  * that a store that stopped answering makes the app slower and never blocks it. A `get`

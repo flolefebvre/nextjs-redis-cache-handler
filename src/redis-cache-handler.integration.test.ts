@@ -1,6 +1,7 @@
 import { createClient } from "redis";
 import { expect, inject, onTestFinished, test } from "vitest";
 
+import { stopwatch } from "../tests/unit-harness.js";
 import {
   VALUE,
   bytesOf,
@@ -13,11 +14,16 @@ import {
   timingsOf,
 } from "../tests/handler-harness.js";
 import { createRedisCacheHandler } from "./redis-cache-handler.js";
+import { tagKeys } from "./tag-store.js";
 import type { CacheEntry } from "./types.js";
 
 const SHORT_TIMEOUT = 200;
 
 const RETRY_BUDGET = 200;
+
+const PATIENT_BUDGET = 5_000;
+
+const PROMPT_MS = 1_000;
 
 test("an Entry written by set comes back from get unchanged", async () => {
   const handler = handlerFor(freshPrefix());
@@ -243,4 +249,22 @@ test("an invalidation that kept failing reports once, whatever the connection re
 
   expect(opsOf(recorded.errors).filter((op) => op === "updateTags")).toEqual(["updateTags"]);
   expect(opsOf(recorded.errors)).toContain("connect");
+});
+
+test("an invalidation the store can only refuse fails at once rather than on the budget", async () => {
+  const keyPrefix = freshPrefix();
+  const recorded = recording();
+  const handler = handlerFor(keyPrefix, {
+    updateTagsTimeout: PATIENT_BUDGET,
+    ...recorded.hooks,
+  });
+  const server = await serverClient();
+  await server.set(tagKeys(keyPrefix).manifest, "not a Tag manifest");
+  const elapsed = stopwatch();
+
+  const invalidating = handler.updateTags(["posts"]);
+
+  await expect(invalidating).rejects.toThrowError("updateTags");
+  expect(elapsed()).toBeLessThan(PROMPT_MS);
+  expect(opsOf(recorded.errors)).toEqual(["updateTags"]);
 });
