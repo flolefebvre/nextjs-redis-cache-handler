@@ -23,8 +23,8 @@ export interface Page {
   markers: Record<string, string>;
 }
 
-/** One Scenario's Fixture: two Instances, their Recorded calls, and the ways to drive them. */
-export interface Fixture {
+/** One Scenario's Instance pair, their Recorded calls, and the ways to drive them. */
+export interface Instances {
   /** The build id every cache key of this build starts with. */
   buildId: string;
   /** The Key prefix these two Instances share, and no other Scenario uses. */
@@ -40,8 +40,8 @@ export interface Fixture {
 }
 
 /**
- * Start one Scenario's Fixture: a fresh Key prefix seeded with what `next build` wrote, and
- * a fresh pair of Instances on random ports serving the one build of the run.
+ * Start one Scenario's Instances: a fresh Key prefix seeded with what `next build` wrote,
+ * and a fresh pair of Instances on random ports serving the one build of the run.
  *
  * This is the whole wiring a Scenario file needs — a second one is this call and nothing
  * else — and the only place that talks to Redis: a Scenario asserts on HTTP output and on
@@ -52,18 +52,18 @@ export interface Fixture {
  * Scenario files can never see each other's revalidations. An empty copy is a failure
  * here, where it names itself, rather than a puzzling miss inside a step.
  */
-export async function startFixture(scenario: string): Promise<Fixture> {
+export async function startInstances(scenario: string): Promise<Instances> {
   const build = inject("e2eBuild");
   const keyPrefix = `e2e-${scenario}-${suffix()}:`;
   await seedPrefix(build.redisUrl, build.buildPrefix, keyPrefix);
 
   const recordFile = recordFileOf(scenario);
   await writeFile(recordFile, "");
-  const instances = {
+  const running = {
     A: await startInstance("A", scenario, build.redisUrl, keyPrefix, recordFile),
     B: await startInstance("B", scenario, build.redisUrl, keyPrefix, recordFile),
   };
-  const urlOf = (instance: InstanceName): string => instances[instance].url;
+  const urlOf = (instance: InstanceName): string => running[instance].url;
 
   return {
     buildId: build.buildId,
@@ -85,7 +85,7 @@ export async function startFixture(scenario: string): Promise<Fixture> {
       return response.status;
     },
     stop: async () => {
-      await Promise.all([instances.A.stop(), instances.B.stop()]);
+      await Promise.all([running.A.stop(), running.B.stop()]);
     },
   };
 }
