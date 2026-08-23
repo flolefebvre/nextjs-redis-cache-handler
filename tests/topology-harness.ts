@@ -2,6 +2,7 @@ import { createClient } from "redis";
 import { expect, onTestFinished, test, vi } from "vitest";
 
 import type { CacheClient } from "../src/client.js";
+import { entryKey } from "../src/entry-store.js";
 import { createRedisCacheHandler } from "../src/redis-cache-handler.js";
 import { createCacheClient } from "../src/client.js";
 import type { CacheEntry, CacheHandler } from "../src/types.js";
@@ -115,15 +116,55 @@ export async function entryReadsOn(
 function isEntryRead(command: string[], keyPrefix: string): boolean {
   const [name, key] = command;
 
-  return name?.toUpperCase() === ENTRY_READ && (key ?? "").startsWith(`${keyPrefix}entry:`);
+  return name?.toUpperCase() === ENTRY_READ && (key ?? "").startsWith(entryKey(keyPrefix, ""));
 }
 
+/** What a server says of itself when it is a node of a Cluster, and nothing else does. */
+const CLUSTER_ENABLED = "cluster_enabled:1";
+
 /**
- * The node a deployment answers as its master on right now, asked of every node rather than
- * assumed: a Sentinel deployment promotes its replica, so which URL is the master is a
- * question with an answer only at the moment it is asked.
+ * The node a deployment would send a write of one key to, asked of the deployment itself
+ * rather than assumed by the caller.
+ *
+ * Which node that is has an answer only at the moment it is asked, and the question is not
+ * the same one on every deployment: a Sentinel keeps one master and promotes its replica
+ * onto another server, a Cluster keeps one master per slot and the key alone says which
+ * slot. So the deployment is asked what it is — only a Cluster node reports
+ * `cluster_enabled:1` — and then asked its own form of the question, in the same spirit as
+ * `commandsPerNode`: a cell names the key it cares about and stays ignorant of which
+ * deployment it is running on.
  */
-export async function masterNode(nodeUrls: string[]): Promise<string> {
+export async function masterOf(key: string, nodeUrls: string[]): Promise<string> {
+  const node = await serverClient(nodeUrls[0]);
+  const info = String(await node.sendCommand(["INFO"]));
+
+  return info.includes(CLUSTER_ENABLED) ? slotMaster(node, key, nodeUrls) : soleMaster(nodeUrls);
+}
+
+/** One slot range of `CLUSTER SLOTS`: the slots it covers, then its master's address. */
+type SlotRange = [number, number, [string, number, ...unknown[]], ...unknown[]];
+
+/**
+ * The master of the slot a key hashes to, read off the routing view every client builds its
+ * own from, and named back as the `nodeUrls` entry it is: an address the deployment
+ * announces is one the tests dial, which is what `--cluster-announce-ip` and the matching
+ * host and container ports are for.
+ */
+async function slotMaster(node: ServerClient, key: string, nodeUrls: string[]): Promise<string> {
+  const slot = Number(await node.sendCommand(["CLUSTER", "KEYSLOT", key]));
+  const ranges = (await node.sendCommand(["CLUSTER", "SLOTS"])) as SlotRange[];
+  const owner = ranges.find(([from, to]) => slot >= from && slot <= to);
+  if (owner === undefined) throw new Error(`no node owns slot ${String(slot)}`);
+
+  const [host, port] = owner[2];
+  const url = `redis://${host}:${String(port)}`;
+  if (!nodeUrls.includes(url)) throw new Error(`slot ${String(slot)} is owned by ${url}`);
+
+  return url;
+}
+
+/** The one node of a single-master deployment reporting itself a master right now. */
+async function soleMaster(nodeUrls: string[]): Promise<string> {
   const replication = await onEveryNode(nodeUrls, ["INFO", "replication"]);
   const masters = nodeUrls.filter((_, index) => String(replication[index]).includes("role:master"));
   if (masters.length !== 1) throw new Error(`the deployment has ${String(masters.length)} masters`);
@@ -485,12 +526,17 @@ export async function connected(client: TopologyClient): Promise<TopologyClient>
   return client;
 }
 
-/** Close a client one test file created and take its deployment down. */
+/**
+ * Close every client one test file created and take its deployment down. A file holds one
+ * client per kind of caller it puts the handler in front of — a plain one, one built to
+ * pass a node's failure on, one built to read replicas — and none of them may outlive the
+ * deployment they were pointed at.
+ */
 export async function stopped(
-  client: { close(): Promise<void> },
+  clients: { close(): Promise<void> }[],
   deployment: RunningTopology,
 ): Promise<void> {
-  await client.close().catch(() => undefined);
+  await Promise.all(clients.map((client) => client.close().catch(() => undefined)));
   await deployment.stop();
 }
 
@@ -543,6 +589,12 @@ export function sharesTheStore(topology: () => Topology): void {
   });
 }
 
+/** The Entry this cell writes and reads back, and the key its node is asked for. */
+const JUST_WRITTEN = "just-written";
+
+/** How many times it reads that Entry: one chance in 256 of missing a replica read. */
+const ENTRY_READS = 8;
+
 /**
  * What a client the caller configured to read replicas owes the handler: nothing changes.
  * A replica-reading client — `replicaPoolSize` on a Sentinel, `useReplicas` on a Cluster —
@@ -554,20 +606,33 @@ export function sharesTheStore(topology: () => Topology): void {
  * handed the write within the microsecond, so a read routed to one comes back with the
  * Entry anyway and hides the routing. The `get` is asserted beside it as what a caller
  * sees of the same thing — a hit with no wait at all between the write and the read.
+ *
+ * It reads the Entry several times because one read decides nothing. A client that reads
+ * replicas spreads a slot's reads over the master and its replicas, and node-redis picks
+ * the first of them at random and then alternates: a single read of a handler that had
+ * stopped routing its reads to the master would land on the master anyway on half the runs,
+ * and a cell built on one would be a coin toss. `ENTRY_READS` reads leave that alternation
+ * nowhere to hide. The count is not tuned to it, though — how a client spreads reads is its
+ * own business and can change under this cell — so it is set where a client picking a node
+ * at random per command, the worst spread this property survives, would still have to miss
+ * the replica every time for the cell to go green. Every read is asserted a hit.
  */
 export function readsTheMaster(topology: () => Topology): void {
   test("the Entry read runs on the master, whatever the client's replica reads", async () => {
     const keyPrefix = freshPrefix();
     const { client, nodeUrls } = topology();
-    const master = await masterNode(nodeUrls);
+    const master = await masterOf(entryKey(keyPrefix, JUST_WRITTEN), nodeUrls);
     const instance = instanceOn(client, keyPrefix);
     await instance.refreshTags();
     const settled = await entryReadsOn(keyPrefix, nodeUrls);
 
-    await instance.set("just-written", Promise.resolve(entryOf()));
-    const entry = await instance.get("just-written", []);
+    await instance.set(JUST_WRITTEN, Promise.resolve(entryOf()));
+    const entries = [];
+    for (let read = 0; read < ENTRY_READS; read++)
+      entries.push(await instance.get(JUST_WRITTEN, []));
 
     expect(await settled()).toEqual([master]);
-    expect(await bytesOf(entry?.value ?? new ReadableStream())).toEqual(VALUE);
+    for (const entry of entries)
+      expect(await bytesOf(entry?.value ?? new ReadableStream())).toEqual(VALUE);
   });
 }
