@@ -66,6 +66,7 @@ return 1
 test("an event written between two refreshes is picked up without reading the manifest again", async () => {
   const { keyPrefix, instanceA, instanceB } = instancePair();
   await storeBefore(instanceA, "posts", { tags: ["posts"] });
+  await holdHandlerClockAhead(keyPrefix);
   await instanceB.refreshTags();
   const stream = await commandStream(keyPrefix);
 
@@ -91,6 +92,7 @@ test("the first refresh of a process reads the whole manifest", async () => {
 
 test("ten concurrent refreshes are one read round trip, and all of them resolve", async () => {
   const keyPrefix = freshPrefix();
+  await holdHandlerClockAhead(keyPrefix);
   const handler = handlerFor(keyPrefix);
   await handler.refreshTags();
   await handler.refreshTags();
@@ -246,9 +248,10 @@ test(
  * can bring a later read below, which keeps the watermark comparison of two reads with no
  * stamp between them monotone for the whole cell (ADR 0003).
  *
- * It goes before the first stamp of the cell, never after: a stamp issued under the floor
- * lands on it, so the events a cell writes stay inside the margin the next read reaches
- * back over, while a floor raised after them would leave them below it.
+ * It goes before the tag events the cell writes, never after them: a stamp issued under
+ * the floor lands on it, so those events stay inside the margin the next read reaches back
+ * over, while a floor raised after them would leave them a hold below it, outside the
+ * range that read asks for.
  */
 async function holdHandlerClockAhead(keyPrefix: string): Promise<void> {
   const server = await serverClient();
