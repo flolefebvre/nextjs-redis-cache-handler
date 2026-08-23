@@ -9,6 +9,10 @@ import { outcomesOf } from "./records.js";
  * another one already asserts takes the step from here rather than restating it: what a
  * Scenario needs twice lives in the harness, and one step then has one set of assertions
  * wherever it is taken.
+ *
+ * A step is admitted here only once two Scenarios take it identically and assert it the
+ * same way. A step one Scenario takes stays in that Scenario, whatever it resembles: a
+ * shared step read as a narrative nobody tells is worse than the line it saved.
  */
 
 /**
