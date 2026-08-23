@@ -36,6 +36,7 @@ e2e/            The e2e harness, and one .e2e.test.ts per Scenario
   instances.ts    startInstances(): a Scenario's fresh Instance pair, on the build it asks for
   pages.ts        The Fixture's paths, and the markers each of its pages owes
   records.ts      The Recorded calls, sliced by offset and awaited with waitFor
+  steps.ts        The steps two Scenarios take identically, asserted in one place
 docs/
   codebase/     Conventions, one file per area, linked from the AGENTS.md section it governs
   adr/          Architectural decisions

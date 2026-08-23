@@ -366,6 +366,12 @@ regenerate in background) when a tag has `staleAt > entry.timestamp`
 **[source]** `dist/server/lib/incremental-cache/tags-manifest.external.js:
 27-53`, `default.js:82-89`.
 
+A rejection from `updateTags` reaches the caller. The flush is awaited before
+the post-action re-render, so an invalidation the handler gave up on fails the
+action's request: it answers **500**, with an RSC flight body carrying no error
+digest — the status is the only thing that names the failure — and the Instance
+logs the error once **[measured]** `e2e/outage.e2e.test.ts`.
+
 Independently of the handler, the wrapper discards Entries created before a
 tag that was revalidated in the **current** request, or in a previous request
 that redirected here (`x-next-revalidated-tags` header) **[source]**
