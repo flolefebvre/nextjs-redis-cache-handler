@@ -1,7 +1,7 @@
 import { createSentinel, type RedisSentinelType } from "redis";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
-import { serverClient, wait } from "../tests/handler-harness.js";
+import { wait } from "../tests/handler-harness.js";
 import {
   providedRedisUrl,
   SENTINEL_MASTER_NAME,
@@ -13,8 +13,9 @@ import {
   acrossADisturbance,
   connected,
   KILL_CONNECTIONS,
+  failedOver,
   onEveryNode,
-  promotableReplica,
+  SentinelTiltError,
   sharesTheStore,
   stopped,
 } from "../tests/topology-harness.js";
@@ -22,6 +23,9 @@ import {
 const DEPLOYMENT_TIMEOUT = 180_000;
 
 const REBUILD_TIMEOUT = 60_000;
+
+/** What a failover may take here: every attempt of `failedOver`, and the cell around them. */
+const FAILOVER_TIMEOUT = 90_000;
 
 /** Long enough for a killed node connection to be dialled again once it was noticed. */
 const REBUILT_MS = 500;
@@ -64,22 +68,21 @@ describe.skipIf(providedRedisUrl() !== undefined)("an injected Sentinel client",
 
   test(
     "a failover is counted, and the next refresh reads the whole manifest off the new master",
-    async () => {
+    async ({ skip }) => {
       const topology = { client, nodeUrls: deployment.nodeUrls };
 
-      const disturbed = await acrossADisturbance(topology, async () => {
-        await promotableReplica(deployment.sentinelUrl);
-        const sentinel = await serverClient(deployment.sentinelUrl);
-        const promoted = new Promise((resolve) => client.once("topology-change", resolve));
+      const disturbed = await acrossADisturbance(topology, () =>
+        failedOver(deployment.sentinelUrl, client),
+      ).catch((error: unknown) => {
+        if (error instanceof SentinelTiltError) skip(error.message);
 
-        await sentinel.sendCommand(["SENTINEL", "FAILOVER", SENTINEL_MASTER_NAME]);
-        await promoted;
+        throw error;
       });
 
       expect(disturbed.entry).toBeUndefined();
       expect(disturbed.tagCommands).toContain("HGETALL");
       expect(disturbed.rebuilds).toBeGreaterThan(0);
     },
-    REBUILD_TIMEOUT,
+    FAILOVER_TIMEOUT,
   );
 });

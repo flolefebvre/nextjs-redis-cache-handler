@@ -12,11 +12,13 @@ import {
   freshPrefix,
   readAfterRefresh,
   serverClient,
+  type ServerClient,
   storeBefore,
   tagCommandNames,
   VALUE,
 } from "./handler-harness.js";
 import { SENTINEL_MASTER_NAME, type RunningTopology } from "./redis-container.js";
+import { stopwatch } from "./unit-harness.js";
 
 /** A deployment one test file owns, and the client the handler is given for it. */
 export interface Topology {
@@ -84,6 +86,51 @@ export const KILL_CONNECTIONS = ["CLIENT", "KILL", "TYPE", "normal"];
 const POLL_MS = 200;
 
 /**
+ * How long that wait may take: longer than the Sentinel's `INFO` period with margin, since
+ * the stale view it waits out lasts up to that period.
+ */
+const PROMOTABLE_TIMEOUT_MS = 15_000;
+
+/**
+ * How long a failover is asked for, over as many attempts as it takes: one TILT period and
+ * a margin. It is enough to wait out a single step of the host's clock, and deliberately
+ * not enough to wait out a bout of them — a Sentinel put back into TILT every step is one
+ * no failover completes on, which is a property of the host and not something a longer
+ * budget reaches.
+ */
+const FAILOVER_BUDGET_MS = 45_000;
+
+/**
+ * How long one attempt waits for the promotion: the deployment's `failover-timeout`, past
+ * which an unfinished failover is abandoned, and a margin. Waiting longer would only be
+ * waiting on an attempt that has already been given up on.
+ */
+const PROMOTION_MS = 8_000;
+
+const FAILOVER_IN_PROGRESS = "INPROG";
+
+/**
+ * A failover that could not complete because the Sentinel is in TILT: not a failure of
+ * anything under test, and the one outcome a cell is allowed to skip itself on.
+ */
+export class SentinelTiltError extends Error {
+  constructor() {
+    super(
+      "the Sentinel is in TILT and completes no failover: this host steps its wall clock, " +
+        "and a Sentinel whose cron sees a step suspends every failover action for thirty " +
+        "seconds. A host whose clock holds still — CI's — runs this through.",
+    );
+    this.name = "SentinelTiltError";
+  }
+}
+
+/** What `failedOver` needs of a client: the one event a promotion reaches it by. */
+export interface PromotedClient {
+  once(event: "topology-change", listener: () => void): unknown;
+  off(event: "topology-change", listener: () => void): unknown;
+}
+
+/**
  * Wait until the Sentinel has a replica it would promote: one whose link to the master it
  * reports as up.
  *
@@ -92,24 +139,148 @@ const POLL_MS = 200;
  * all, so a cell that asked for one and then waited for the promotion waits for something
  * that never comes. The view is the Sentinel's own and it refreshes it on its `INFO`
  * period, ten seconds, so it reports the stale `err` it last saw for that long after a
- * cell killed the connections on the data ports, the Sentinel's own links among them.
- * The deployment is not handed over until it says `ok` either, for the same reason.
+ * cell killed the connections on the data ports, the Sentinel's own links among them —
+ * which is why the wait is given a deadline that outlasts that period rather than the
+ * one-second default, that being the very window it exists to wait out. The deployment is
+ * not handed over until it says `ok` either, for the same reason.
  */
 export async function promotableReplica(sentinelUrl: string): Promise<void> {
   const sentinel = await serverClient(sentinelUrl);
 
-  await vi.waitUntil(
-    async () => {
-      const replicas = (await sentinel.sendCommand([
-        "SENTINEL",
-        "REPLICAS",
-        SENTINEL_MASTER_NAME,
-      ])) as Record<string, string>[];
+  await vi.waitUntil(() => promotable(sentinel), {
+    interval: POLL_MS,
+    timeout: PROMOTABLE_TIMEOUT_MS,
+  });
+}
 
-      return replicas.some((replica) => replica["master-link-status"] === "ok");
+/**
+ * Fail one Sentinel deployment over, and come back when the client has been told: ask for
+ * the failover, wait for the `topology-change` a completed one publishes, and ask again
+ * for as long as the budget lasts.
+ *
+ * The retrying is TILT, and TILT is why nothing here waits on a delay. A Sentinel whose
+ * cron sees the wall clock go backwards, or jump forward by more than two seconds, decides
+ * it cannot trust its own timings and enters TILT: it keeps observing but suspends every
+ * failover action for thirty seconds. A failover in flight when that happens is left where
+ * it stands, exceeds its `failover-timeout` and is abandoned — the replica may already have
+ * been told to become a master, but `+switch-master` is never published, so the client is
+ * never told and a cell waiting for the event waits for one that will not come. This host's
+ * clock steps, so this is not a rare case here, and a second attempt asked for while TILT
+ * still holds is answered `INPROG` for the failover that is still pending. So an attempt is
+ * made only while `INFO sentinel` reports `sentinel_tilt:0` and a replica is promotable,
+ * `INPROG` is read as "not yet" rather than as a failure, and every attempt is bounded by
+ * what a Sentinel gives one — never by a sleep, which would state a duration this host is
+ * exactly the one not to be trusted about.
+ */
+export async function failedOver(sentinelUrl: string, client: PromotedClient): Promise<void> {
+  const sentinel = await serverClient(sentinelUrl);
+  const elapsed = stopwatch();
+  let tilted = false;
+
+  while (elapsed() < FAILOVER_BUDGET_MS) {
+    const acting = await actingSentinel(sentinel, FAILOVER_BUDGET_MS - elapsed(), () => {
+      tilted = true;
+    });
+    if (!acting) break;
+
+    const promotion = promotionOf(client);
+    const promoted = (await ask(sentinel)) && (await promotion.seen);
+    promotion.giveUp();
+    if (promoted) return;
+  }
+
+  if (tilted || (await tilting(sentinel))) throw new SentinelTiltError();
+
+  throw new Error("the Sentinel published no promotion within the budget, and never tilted");
+}
+
+/**
+ * Wait for a Sentinel that would act on a failover — out of TILT, with a replica it may
+ * promote — within what is left of the budget, and say whether one was reached. A budget
+ * that runs out is an answer here, not a throw: what it means depends on whether TILT was
+ * what held it, which is the caller's to tell.
+ */
+async function actingSentinel(
+  sentinel: ServerClient,
+  budget: number,
+  onTilt: () => void,
+): Promise<boolean> {
+  return vi
+    .waitUntil(
+      async () => {
+        if (await tilting(sentinel)) {
+          onTilt();
+
+          return false;
+        }
+
+        return promotable(sentinel);
+      },
+      { interval: POLL_MS, timeout: Math.max(budget, POLL_MS) },
+    )
+    .then(() => true)
+    .catch(() => false);
+}
+
+/** Ask for the failover, reading "one is already pending" as "not yet" rather than a failure. */
+async function ask(sentinel: ServerClient): Promise<boolean> {
+  return sentinel
+    .sendCommand(["SENTINEL", "FAILOVER", SENTINEL_MASTER_NAME])
+    .then(() => true)
+    .catch((error: unknown) => {
+      if (error instanceof Error && error.message.startsWith(FAILOVER_IN_PROGRESS)) return false;
+
+      throw error;
+    });
+}
+
+/**
+ * The promotion of one attempt: whether the client was told within what a Sentinel gives an
+ * attempt. The listener comes off either way, so that an attempt that was abandoned leaves
+ * nothing behind for the next one to hear.
+ */
+function promotionOf(client: PromotedClient): { seen: Promise<boolean>; giveUp: () => void } {
+  let stop = (): void => undefined;
+  const seen = new Promise<boolean>((resolve) => {
+    const told = (): void => {
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      resolve(false);
+    }, PROMOTION_MS);
+
+    client.once("topology-change", told);
+    stop = (): void => {
+      clearTimeout(timer);
+      client.off("topology-change", told);
+      resolve(false);
+    };
+  });
+
+  return {
+    seen,
+    giveUp: () => {
+      stop();
     },
-    { interval: POLL_MS },
-  );
+  };
+}
+
+/** Whether the Sentinel is in TILT, and so acting on nothing it decides. */
+async function tilting(sentinel: ServerClient): Promise<boolean> {
+  const info = await sentinel.sendCommand(["INFO", "sentinel"]);
+
+  return !String(info).includes("sentinel_tilt:0");
+}
+
+/** Whether the Sentinel reports a replica whose link to the master is up. */
+async function promotable(sentinel: ServerClient): Promise<boolean> {
+  const replicas = (await sentinel.sendCommand([
+    "SENTINEL",
+    "REPLICAS",
+    SENTINEL_MASTER_NAME,
+  ])) as Record<string, string>[];
+
+  return replicas.some((replica) => replica["master-link-status"] === "ok");
 }
 
 /** What a deployment showed of itself while a connection under it was rebuilt. */
