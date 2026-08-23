@@ -55,22 +55,80 @@ export async function onEveryNode(nodeUrls: string[], command: string[]): Promis
 }
 
 /**
- * Watch every node of a deployment at once, and read back the names of the commands that
- * carried the Tag manifest, wherever they ran: a Cluster keeps that slot on one node of
- * three, and a Sentinel moves it to another server when the master changes, so which node
- * ran them is not something a cell can name in advance.
+ * Watch every node of a deployment at once, on a connection per node, and read back what
+ * each of them ran on one Key prefix, the node it ran on beside it.
+ *
+ * Which node runs what is not something a cell can name in advance: a Cluster keeps one
+ * slot on one node of three, a Sentinel moves the master to another server when it fails
+ * over, and a client the caller configured to read replicas sends its reads somewhere else
+ * again. So every node is watched, and what a cell asks of the answer is its own.
+ */
+async function commandsPerNode(
+  keyPrefix: string,
+  nodeUrls: string[],
+): Promise<() => Promise<[string, string[][]][]>> {
+  const streams = await Promise.all(
+    nodeUrls.map(async (url) => [url, await commandStream(keyPrefix, url)] as const),
+  );
+
+  return async () =>
+    Promise.all(
+      streams.map(async ([url, stream]) => [url, await stream.settled()] as [string, string[][]]),
+    );
+}
+
+/**
+ * The names of the commands that carried the Tag manifest, wherever they ran: the manifest
+ * lives on one node of a deployment and which one is not a cell's to know, so the names
+ * come back pooled over every node.
  */
 export async function tagCommandsOn(
   keyPrefix: string,
   nodeUrls: string[],
 ): Promise<() => Promise<string[]>> {
-  const streams = await Promise.all(nodeUrls.map((url) => commandStream(keyPrefix, url)));
+  const settled = await commandsPerNode(keyPrefix, nodeUrls);
 
-  return async () => {
-    const perNode = await Promise.all(streams.map((stream) => stream.settled()));
+  return async () =>
+    (await settled()).flatMap(([, commands]) => tagCommandNames(commands, keyPrefix));
+}
 
-    return perNode.flatMap((commands) => tagCommandNames(commands, keyPrefix));
-  };
+/** The command an Entry is read with, as `MONITOR` names it whatever started it. */
+const ENTRY_READ = "HGETALL";
+
+/**
+ * The nodes an Entry of this Key prefix was read on, named by the read alone: a write is
+ * carried to a replica over the replication link and shows up in its stream too, so a node
+ * that only ever took the Entry over replication is not one the Entry was read on.
+ */
+export async function entryReadsOn(
+  keyPrefix: string,
+  nodeUrls: string[],
+): Promise<() => Promise<string[]>> {
+  const settled = await commandsPerNode(keyPrefix, nodeUrls);
+
+  return async () =>
+    (await settled())
+      .filter(([, commands]) => commands.some((command) => isEntryRead(command, keyPrefix)))
+      .map(([url]) => url);
+}
+
+function isEntryRead(command: string[], keyPrefix: string): boolean {
+  const [name, key] = command;
+
+  return name?.toUpperCase() === ENTRY_READ && (key ?? "").startsWith(`${keyPrefix}entry:`);
+}
+
+/**
+ * The node a deployment answers as its master on right now, asked of every node rather than
+ * assumed: a Sentinel deployment promotes its replica, so which URL is the master is a
+ * question with an answer only at the moment it is asked.
+ */
+export async function masterNode(nodeUrls: string[]): Promise<string> {
+  const replication = await onEveryNode(nodeUrls, ["INFO", "replication"]);
+  const masters = nodeUrls.filter((_, index) => String(replication[index]).includes("role:master"));
+  if (masters.length !== 1) throw new Error(`the deployment has ${String(masters.length)} masters`);
+
+  return masters[0] ?? "";
 }
 
 /**
@@ -481,6 +539,35 @@ export function sharesTheStore(topology: () => Topology): void {
     await instance.set("flushed", Promise.resolve(entryOf({ tags: [] })));
     await expect(instance.updateTags(["posts"])).resolves.toBeUndefined();
     const entry = await readAfterRefresh(instance, "flushed");
+    expect(await bytesOf(entry?.value ?? new ReadableStream())).toEqual(VALUE);
+  });
+}
+
+/**
+ * What a client the caller configured to read replicas owes the handler: nothing changes.
+ * A replica-reading client — `replicaPoolSize` on a Sentinel, `useReplicas` on a Cluster —
+ * is a choice a caller makes for their own traffic, and the handler's own reads are not
+ * theirs to route: every one of them goes where the writes go.
+ *
+ * The cell states that as the node the Entry was read on, because that is the property and
+ * because the outcome alone does not carry it: a replica of a deployment on one host is
+ * handed the write within the microsecond, so a read routed to one comes back with the
+ * Entry anyway and hides the routing. The `get` is asserted beside it as what a caller
+ * sees of the same thing — a hit with no wait at all between the write and the read.
+ */
+export function readsTheMaster(topology: () => Topology): void {
+  test("the Entry read runs on the master, whatever the client's replica reads", async () => {
+    const keyPrefix = freshPrefix();
+    const { client, nodeUrls } = topology();
+    const master = await masterNode(nodeUrls);
+    const instance = instanceOn(client, keyPrefix);
+    await instance.refreshTags();
+    const settled = await entryReadsOn(keyPrefix, nodeUrls);
+
+    await instance.set("just-written", Promise.resolve(entryOf()));
+    const entry = await instance.get("just-written", []);
+
+    expect(await settled()).toEqual([master]);
     expect(await bytesOf(entry?.value ?? new ReadableStream())).toEqual(VALUE);
   });
 }

@@ -58,24 +58,19 @@ function createTunedClient(url: string) {
 }
 
 /**
- * The commands one operation runs on a standalone client, on a view with a chosen type
- * mapping: the raw command channel the Lua scripts go through, and the one typed command
- * the handler reads an Entry with.
+ * The commands one operation runs on a standalone client, on a view with the type mapping
+ * the script it runs declares: the raw command channel, and nothing besides.
  *
- * `hGetAll` is typed rather than sent as a raw command because a raw reply is not
- * normalised across RESP versions — a flat array on RESP2, a map on RESP3 — while a Lua
- * script's reply is, Redis converting it to RESP2 shapes unless the script asks for
- * otherwise, which none of these do.
+ * It is the only channel because every operation of this handler is a Lua script, its reads
+ * included. A typed command would answer a shape of its own per RESP version — `HGETALL` a
+ * flat array on RESP2 and a map on RESP3 — where a script's reply is normalised, Redis
+ * converting it to RESP2 shapes unless the script asks otherwise, which none of these do;
+ * and it would be routed by the intent node-redis infers from the command rather than by the
+ * one the handler states, which is what sends every read of the handler's to the master.
  */
 export interface CacheCommands {
   /** Send one command, argument by argument, exactly as given. */
   sendCommand(args: readonly RedisArgument[]): Promise<unknown>;
-  /**
-   * Every field of one hash. The values are `unknown` because the view's type mapping
-   * decides what they are at runtime and that mapping is not carried in this type: the
-   * one caller of it asks for bytes and narrows the fields itself.
-   */
-  hGetAll(key: RedisArgument): Promise<Record<string, unknown>>;
 }
 
 /**
@@ -86,8 +81,6 @@ export interface CacheCommands {
 export interface SentinelCacheCommands {
   /** Send one command, told whether it may run on a replica. */
   sendCommand(isReadonly: boolean, args: readonly RedisArgument[]): Promise<unknown>;
-  /** Every field of one hash, on the node the client routes it to. */
-  hGetAll(key: RedisArgument): Promise<Record<string, unknown>>;
 }
 
 /**
@@ -102,8 +95,6 @@ export interface ClusterCacheCommands {
     isReadonly: boolean,
     args: readonly RedisArgument[],
   ): Promise<unknown>;
-  /** Every field of one hash, on the node the key's slot belongs to. */
-  hGetAll(key: RedisArgument): Promise<Record<string, unknown>>;
 }
 
 /**

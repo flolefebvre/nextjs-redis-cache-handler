@@ -1,18 +1,10 @@
-import { RESP_TYPES } from "redis";
-
 import type { CacheClient } from "./client.js";
-import {
-  decodeEntryHash,
-  encodeEntryFields,
-  type BufferedEntry,
-  type StoredEntry,
-} from "./entry-hash.js";
+import { encodeEntryFields, type BufferedEntry, type StoredEntry } from "./entry-hash.js";
 import { runScript } from "./script-runner.js";
-import { writeEntryScript } from "./scripts.js";
+import { readEntryScript, writeEntryScript } from "./scripts.js";
 import type { Timestamp } from "./types.js";
 
 const NEVER_EXPIRES = 4_294_967_294;
-const BINARY_VALUES = { [RESP_TYPES.BLOB_STRING]: Buffer };
 
 /** Where one Entry lives: the Key prefix, used verbatim, then Next.js's cache key raw. */
 export function entryKey(keyPrefix: string, cacheKey: string): string {
@@ -73,14 +65,15 @@ export async function writeEntry(
 }
 
 /**
- * The Entry the key holds, or `undefined` when it holds none. The value is read with
- * binary type mapping: decoding an RSC payload as UTF-8 would corrupt it.
+ * The Entry the key holds, or `undefined` when it holds none.
+ *
+ * It goes through the script channel like every other operation, which is what sends it to
+ * the master of a deployment whatever the caller's client would route a read-only command
+ * to, and what has its values come back as the bytes an RSC payload is.
  */
 export async function readEntry(
   client: CacheClient,
   key: string,
 ): Promise<StoredEntry | undefined> {
-  const hash = await client.withTypeMapping(BINARY_VALUES).hGetAll(key);
-
-  return decodeEntryHash(hash);
+  return runScript(client, readEntryScript, [key], []);
 }

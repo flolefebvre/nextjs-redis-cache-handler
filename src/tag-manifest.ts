@@ -1,3 +1,4 @@
+import { hashFieldsOf } from "./hash-reply.js";
 import type { Timestamp } from "./types.js";
 
 /** The never sentinel Next.js normalises an infinite `expire` to, in seconds. */
@@ -59,14 +60,12 @@ export function parseTagRefresh(reply: unknown): TagRefresh {
 
   const handlerNow = Number(reply[0]);
   const wallNow = Number(reply[1]);
-  const fields: unknown = reply[2];
   if (!Number.isFinite(handlerNow) || !Number.isFinite(wallNow)) throw new Error(BAD_REPLY);
-  if (!Array.isArray(fields) || fields.length % 2 !== 0) throw new Error(BAD_REPLY);
 
   const states = new Map<string, TagState>();
-  for (let index = 0; index < fields.length; index += 2) {
-    const state = parseTagState(String(fields[index + 1]));
-    if (state !== undefined) states.set(String(fields[index]), state);
+  for (const [tag, value] of hashFieldsOf(reply[2])) {
+    const state = parseTagState(String(value));
+    if (state !== undefined) states.set(tag, state);
   }
 
   return { handlerNow, wallNow, states };

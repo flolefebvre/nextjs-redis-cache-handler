@@ -1,3 +1,4 @@
+import { hashFieldsOf } from "./hash-reply.js";
 import type { CacheEntry, Timestamp } from "./types.js";
 
 /** An Entry whose value stream has been read into bytes. */
@@ -46,14 +47,14 @@ export function encodeEntryFields(entry: BufferedEntry): (string | Buffer)[] {
  * unreadable — a hash written by another version of this library is a miss, never a
  * throw.
  */
-export function decodeEntryHash(hash: Record<string, unknown>): StoredEntry | undefined {
-  const value = decodeBytes(hash[VALUE_FIELD]);
-  const tags = decodeTags(hash[TAGS_FIELD]);
-  const stale = decodeNumber(hash[STALE_FIELD]);
-  const timestamp = decodeNumber(hash[TIMESTAMP_FIELD]);
-  const expire = decodeNumber(hash[EXPIRE_FIELD]);
-  const revalidate = decodeNumber(hash[REVALIDATE_FIELD]);
-  const writeTime = decodeNumber(hash[WRITE_TIME_FIELD]);
+export function decodeEntryHash(hash: Map<string, unknown>): StoredEntry | undefined {
+  const value = decodeBytes(hash.get(VALUE_FIELD));
+  const tags = decodeTags(hash.get(TAGS_FIELD));
+  const stale = decodeNumber(hash.get(STALE_FIELD));
+  const timestamp = decodeNumber(hash.get(TIMESTAMP_FIELD));
+  const expire = decodeNumber(hash.get(EXPIRE_FIELD));
+  const revalidate = decodeNumber(hash.get(REVALIDATE_FIELD));
+  const writeTime = decodeNumber(hash.get(WRITE_TIME_FIELD));
 
   if (value === undefined || tags === undefined) return undefined;
   if (stale === undefined || timestamp === undefined) return undefined;
@@ -95,4 +96,17 @@ function decodeTags(field: unknown): string[] | undefined {
   if (!Array.isArray(parsed) || parsed.some((tag) => typeof tag !== "string")) return undefined;
 
   return parsed as string[];
+}
+
+/**
+ * The Entry the read script's reply holds, or `undefined` when the key held no hash.
+ *
+ * The reply is the flat field/value array of an `HGETALL`, read through the binary type
+ * mapping that script declares, so every field of it is bytes — the names included, which
+ * the pairing decodes. A reply that is not a hash at all throws, where a hash that is not
+ * an Entry this version wrote is a miss: the first is a store answering something it should
+ * not, the second is a key another version of this library owns.
+ */
+export function parseEntryReply(reply: unknown): StoredEntry | undefined {
+  return decodeEntryHash(hashFieldsOf(reply));
 }

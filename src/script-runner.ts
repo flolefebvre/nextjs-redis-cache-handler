@@ -1,4 +1,4 @@
-import type { RedisArgument } from "redis";
+import type { RedisArgument, TypeMapping } from "redis";
 
 import {
   clientKind,
@@ -10,7 +10,6 @@ import {
 import type { CacheScript } from "./scripts.js";
 
 const NO_SCRIPT = "NOSCRIPT";
-const DEFAULT_TYPE_MAPPING = {};
 const WRITES = false;
 
 /**
@@ -28,9 +27,11 @@ export type ScriptKeys = readonly [RedisArgument, ...RedisArgument[]];
  * and a server that was restarted or had its script cache flushed is caught by the very
  * next call rather than by an error.
  *
- * The reply is read through the default type mapping, whatever mapping the caller's own
- * client carries: a `BLOB_STRING` mapped to `Buffer`, say, would otherwise turn every
- * field of the Tag manifest into bytes the parser does not expect.
+ * The reply is read through the type mapping the script declares, and never the one the
+ * caller's own client carries: the parser of a reply and the mapping it is read through are
+ * one decision, so it is the script that holds both. The manifest scripts are parsed from
+ * text and the Entry read asks for bytes, whatever mapping the injected client was built
+ * with.
  */
 export async function runScript<Reply>(
   client: CacheClient,
@@ -38,7 +39,7 @@ export async function runScript<Reply>(
   keys: ScriptKeys,
   args: readonly RedisArgument[],
 ): Promise<Reply> {
-  const send = sender(client, keys[0]);
+  const send = sender(client, keys[0], script.TYPE_MAPPING);
   const tail = [String(script.NUMBER_OF_KEYS), ...keys, ...args];
   const reply = await send(["EVALSHA", script.SHA1, ...tail]).catch((error: unknown) => {
     if (!isNoScript(error)) throw error;
@@ -53,12 +54,15 @@ export async function runScript<Reply>(
  * How this client is sent a command: the one place the three node-redis clients differ.
  *
  * A Sentinel client is told whether the command may run on a replica, and a Cluster client
- * is told that and the key that routes it. Both answers are fixed here. Every script is a
- * write — `EVALSHA_RO` is Redis 7.0 and up while this library's floor is 6.2, and nothing
- * the handler runs reads a replica — and every script is routable by its first key, which
- * each of them declares as `KEYS[1]`: the Entry scripts touch one Entry key, and the tag
- * scripts touch the manifest, its log and the Handler clock, which the hash tag of ADR
- * 0001 pins to one slot.
+ * is told that and the key that routes it. Both answers are fixed here. Every script is sent
+ * with write intent, the reads of the store included: it is what keeps the handler's own
+ * reads on the master when the caller's client is one configured to read replicas, whose
+ * replica reads are their own traffic's business and not this handler's. `EVALSHA_RO`, the
+ * one way to say otherwise, is Redis 7.0 and up while this library's floor is 6.2, and
+ * nothing here wants it. Every script is routable by its first key, which each of them
+ * declares as `KEYS[1]`: the Entry scripts touch one Entry key, and the tag scripts touch
+ * the manifest, its log and the Handler clock, which the hash tag of ADR 0001 pins to one
+ * slot.
  *
  * The kind was established structurally by `clientKind`; the assertions are what tell the
  * compiler which arm of the union that answer picked.
@@ -66,8 +70,9 @@ export async function runScript<Reply>(
 function sender(
   client: CacheClient,
   firstKey: RedisArgument,
+  typeMapping: TypeMapping,
 ): (command: readonly RedisArgument[]) => Promise<unknown> {
-  const commands = client.withTypeMapping(DEFAULT_TYPE_MAPPING);
+  const commands = client.withTypeMapping(typeMapping);
   const kind = clientKind(client);
 
   if (kind === "cluster") {
