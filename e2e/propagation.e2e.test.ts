@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test, vi } from "vitest";
+import { afterAll, beforeAll, expect, test } from "vitest";
 
 import { startInstances, type Instances, type InstanceName } from "./instances.js";
 import { outcomesOf } from "./records.js";
@@ -131,26 +131,14 @@ test("every key this Scenario recorded belongs to this build", async () => {
   expect(keyed.every((call) => call.key.startsWith(`["${instances.buildId}"`))).toBe(true);
 });
 
-/**
- * The markers of the page, once the named scope has stopped rendering the instant it was
- * rendered at before: a revalidation reaches the other Instance when its manifest is read
- * again, which no instant of this test's clock names.
- */
+/** The post page's markers on one Instance, once the named scope has re-rendered. */
 async function markersOnceChanged(
   instance: InstanceName,
   marker: string,
   before: string | undefined,
 ): Promise<Record<string, string>> {
-  expect(before).toBeDefined();
-  let markers: Record<string, string> = {};
-  await vi.waitUntil(
-    async () => {
-      markers = await postMarkers(instance);
-
-      return markers[marker] !== before;
-    },
-    { timeout: 20_000, interval: 100 },
-  );
+  const markers = await instances.markersOnceChanged(instance, POST, marker, before);
+  expect(Object.keys(markers).sort()).toEqual(POST_MARKERS);
 
   return markers;
 }

@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import { cacheTag } from "next/cache";
 import { connection } from "next/server";
 
 import { getPosts, renderedAt } from "@/lib/data";
@@ -7,12 +8,19 @@ export default function PprPage() {
   return (
     <main>
       <h1>Partially prerendered</h1>
-      <p data-rendered-at="ppr-shell">shell</p>
+      <ShellNote />
       <Suspense fallback={<p>loading hole…</p>}>
         <Hole />
       </Suspense>
     </main>
   );
+}
+
+async function ShellNote() {
+  "use cache";
+  cacheTag("posts");
+
+  return <p data-rendered-at="ppr-shell">{renderedAt()}</p>;
 }
 
 async function Hole() {
