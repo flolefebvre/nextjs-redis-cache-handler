@@ -131,6 +131,7 @@ test("a tag event too old to affect any living Entry stops hiding one", async ()
 
 test("both reads of the Tag manifest stay within the portable command set", async () => {
   const { keyPrefix, instanceA, instanceB } = instancePair();
+  await holdHandlerClockAhead(keyPrefix);
   const stream = await commandStream(keyPrefix);
 
   await instanceB.refreshTags();
@@ -142,7 +143,6 @@ test("both reads of the Tag manifest stay within the portable command set", asyn
     new Set([
       "EVALSHA",
       "GET",
-      "SET",
       "HGETALL",
       "ZCARD",
       "HLEN",
@@ -252,6 +252,9 @@ test(
  * the floor lands on it, so those events stay inside the margin the next read reaches back
  * over, while a floor raised after them would leave them a hold below it, outside the
  * range that read asks for.
+ *
+ * A stamp issued under the held clock persists nothing — the floor is already there — so
+ * no `SET` of the clock key appears in a stream recorded under it.
  */
 async function holdHandlerClockAhead(keyPrefix: string): Promise<void> {
   const server = await serverClient();
