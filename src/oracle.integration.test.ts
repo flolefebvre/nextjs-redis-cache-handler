@@ -1,16 +1,3 @@
-import { describe, test } from "vitest";
-
-import { storeBefore, tick } from "../tests/handler-harness.js";
-import {
-  expectProjection,
-  PROJECTED_VALUE,
-  projectRead,
-  SUBJECTS,
-  type ContractSubject,
-  type ProjectedRead,
-} from "../tests/oracle-harness.js";
-import type { CacheEntry, CacheHandler, Timestamp } from "./types.js";
-
 /**
  * The behavioural half of the contract with Next.js: one Scenario, defined once, run
  * against the Oracle and against this handler, every step projected the same way and
@@ -30,6 +17,20 @@ import type { CacheEntry, CacheHandler, Timestamp } from "./types.js";
  * The Oracle's Tag manifest is a module-level singleton shared by every Oracle object of
  * the process, so no two steps ever name the same tag.
  */
+import { describe, expect, test } from "vitest";
+
+import { storeBefore, tick } from "../tests/handler-harness.js";
+import {
+  expectDivergence,
+  expectProjection,
+  PROJECTED_VALUE,
+  projectRead,
+  SUBJECTS,
+  type ContractSubject,
+  type ProjectedRead,
+} from "../tests/oracle-harness.js";
+import type { CacheEntry, CacheHandler, Timestamp } from "./types.js";
+
 const STALE_SECONDS = 300;
 
 const EXPIRE_SECONDS = 900;
@@ -37,6 +38,8 @@ const EXPIRE_SECONDS = 900;
 const REVALIDATE_SECONDS = 60;
 
 const PAST_EXPIRE_MS = (EXPIRE_SECONDS + REVALIDATE_SECONDS) * 1_000;
+
+const PAST_REVALIDATE_MS = (REVALIDATE_SECONDS + 1) * 1_000;
 
 const A_YEAR_SECONDS = 31_536_000;
 
@@ -49,7 +52,29 @@ const A_YEAR_SECONDS = 31_536_000;
  */
 const EVENT_GAP_MS = 1_000;
 
+const TOLERANCE_MS = 1_000;
+
 const MISS: ProjectedRead = { outcome: "miss" };
+
+/**
+ * What `getExpiration` came to, for a Soft tag just revalidated: the instant it was
+ * revalidated at, which discards every Entry older than it, or `Infinity`, which leaves
+ * the Soft-tag check to `get`. The second declared divergence, and the only one that is
+ * not a step of the Scenario: it is the answer a read is projected through, not a read.
+ */
+type ProjectedExpiration = { kind: "at the tag event" | "infinite" | "at another instant" };
+
+const EXPIRATION: ProjectedExpiration = { kind: "at the tag event" };
+
+const DIVERGENT_EXPIRATION: ProjectedExpiration = { kind: "infinite" };
+
+function projectExpiration(expiration: Timestamp, anchor: Timestamp): ProjectedExpiration {
+  if (expiration === Infinity) return DIVERGENT_EXPIRATION;
+
+  return Math.abs(expiration - anchor) <= TOLERANCE_MS
+    ? EXPIRATION
+    : { kind: "at another instant" };
+}
 
 /** One step of the Scenario: what it drives, and what each side is expected to project. */
 interface ScenarioStep {
@@ -175,6 +200,20 @@ const STEPS: ScenarioStep[] = [
     },
   },
   {
+    name: "an Entry past its revalidate is a miss for the Oracle and served once more by ours",
+    expected: MISS,
+    divergent: served("stale", ["revalidate:post"], PAST_REVALIDATE_MS),
+    async run(handler, anchor) {
+      await storeBefore(
+        handler,
+        "revalidated",
+        scenarioEntry(["revalidate:post"], anchor, PAST_REVALIDATE_MS),
+      );
+
+      return projectRead(handler, "revalidated", [], anchor);
+    },
+  },
+  {
     name: "one tag of a nested union revalidated drops the Entry",
     expected: MISS,
     async run(handler, anchor) {
@@ -195,6 +234,19 @@ describe.each(SUBJECTS)("$name", (subject: ContractSubject) => {
     const projection = await step.run(handler, anchor);
 
     expectProjection(projection, expectationFor(subject, step));
+    if (step.divergent !== undefined) expectDivergence(step.divergent, step.expected);
+  });
+
+  test("the instant the Soft tags expired at is answered with, or left to get", async () => {
+    const handler = subject.create();
+    const anchor = Date.now();
+
+    await handler.updateTags(["expiration:path"]);
+
+    expect(projectExpiration(await handler.getExpiration(["expiration:path"]), anchor)).toEqual(
+      subject.kind === "ours" ? DIVERGENT_EXPIRATION : EXPIRATION,
+    );
+    expect(DIVERGENT_EXPIRATION).not.toEqual(EXPIRATION);
   });
 });
 
