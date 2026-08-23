@@ -73,11 +73,21 @@ export async function tagCommandsOn(
   };
 }
 
-/** What a test file's own client must offer for the harness to open and close it. */
-interface ConnectableClient {
+/**
+ * The client of one deployment, as the test file that created it holds it: what the handler
+ * is given, and what the file itself does with it — open it, await one event of it, and
+ * close it when its deployment goes down.
+ *
+ * The file states it rather than the concrete node-redis type its factory returns, so that
+ * the concrete client is checked against `CacheClient` once, where it is built — see the
+ * rule in `docs/codebase/testing.md`.
+ */
+export type TopologyClient = CacheClient & {
   on(event: "error", listener: () => void): unknown;
+  once(event: string, listener: (payload: unknown) => void): unknown;
   connect(): Promise<unknown>;
-}
+  close(): Promise<void>;
+};
 
 /** The command every test sends to drop the connections a client holds to one node. */
 export const KILL_CONNECTIONS = ["CLIENT", "KILL", "TYPE", "normal"];
@@ -336,7 +346,7 @@ export async function acrossADisturbance(
  * process on a client that has no `error` listener, and a test file's client is the one
  * thing here the handler does not attach one to itself.
  */
-export async function connected<Client extends ConnectableClient>(client: Client): Promise<Client> {
+export async function connected(client: TopologyClient): Promise<TopologyClient> {
   client.on("error", () => undefined);
   await client.connect();
 
