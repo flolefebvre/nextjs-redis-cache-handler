@@ -1,4 +1,4 @@
-import { createCluster, type RedisClusterType } from "redis";
+import { createCluster } from "redis";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 import { wait } from "../tests/handler-harness.js";
@@ -15,6 +15,7 @@ import {
   onEveryNode,
   sharesTheStore,
   stopped,
+  type TopologyClient,
 } from "../tests/topology-harness.js";
 
 const DEPLOYMENT_TIMEOUT = 180_000;
@@ -26,7 +27,7 @@ const REBUILT_MS = 200;
 
 describe.skipIf(providedRedisUrl() !== undefined)("an injected Cluster client", () => {
   let deployment: RunningTopology;
-  let client: RedisClusterType;
+  let client: TopologyClient;
 
   beforeAll(async () => {
     deployment = await startClusterRedis(testImage());

@@ -1,4 +1,4 @@
-import { createSentinel, type RedisSentinelType } from "redis";
+import { createSentinel } from "redis";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 import { wait } from "../tests/handler-harness.js";
@@ -18,6 +18,7 @@ import {
   SentinelTiltError,
   sharesTheStore,
   stopped,
+  type TopologyClient,
 } from "../tests/topology-harness.js";
 
 const DEPLOYMENT_TIMEOUT = 180_000;
@@ -32,7 +33,7 @@ const REBUILT_MS = 500;
 
 describe.skipIf(providedRedisUrl() !== undefined)("an injected Sentinel client", () => {
   let deployment: RunningSentinel;
-  let client: RedisSentinelType;
+  let client: TopologyClient;
 
   beforeAll(async () => {
     deployment = await startSentinelRedis(testImage());
