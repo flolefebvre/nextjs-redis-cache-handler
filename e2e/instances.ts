@@ -94,6 +94,19 @@ export interface Instances {
     marker: string,
     before: string | undefined,
   ): Promise<Record<string, string>>;
+  /**
+   * The markers of a path on one Instance, once two consecutive requests agree on the
+   * named scope: what that Instance serves from its Entries rather than from a render.
+   *
+   * The counterpart of `markersOnceChanged` for a Scenario that has no Recorded call to
+   * wait on — a build with no recording wrapper in the path — since the write that follows
+   * a first render lands at an instant no clock of a Scenario names.
+   */
+  markersOnceStable(
+    instance: InstanceName,
+    path: string,
+    marker: string,
+  ): Promise<Record<string, string>>;
   /** Run a Server Action on one Instance, by the name the Fixture exports it under. */
   action(instance: InstanceName, exportedName: string): Promise<number>;
   /**
@@ -167,6 +180,24 @@ export async function startInstances(
           const rendered = markers[marker];
 
           return page.status === 200 && rendered !== undefined && rendered !== before;
+        },
+        { timeout: MARKER_TIMEOUT, interval: 100 },
+      );
+
+      return markers;
+    },
+    markersOnceStable: async (instance, path, marker) => {
+      let markers: Record<string, string> = {};
+      let previous: string | undefined;
+      await vi.waitUntil(
+        async () => {
+          const page = await get(instance, path);
+          markers = page.markers;
+          const rendered = markers[marker];
+          const stable = page.status === 200 && rendered !== undefined && rendered === previous;
+          previous = rendered;
+
+          return stable;
         },
         { timeout: MARKER_TIMEOUT, interval: 100 },
       );
